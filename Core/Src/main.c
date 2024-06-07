@@ -165,7 +165,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 124);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 100);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 100);
 
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
@@ -187,8 +187,6 @@ int main(void)
 	  count1 = __HAL_TIM_GET_COUNTER(&htim3);
 
 
-	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 124);
-	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 100);
 
 		 printf("%ld\n\r", speed_L);
 		 printf("%ld\n\r", speed_R);
