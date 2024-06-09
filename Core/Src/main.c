@@ -26,7 +26,21 @@
 /* USER CODE BEGIN Includes */
 #include <string.h>
 #include <stdio.h>
-#define ENCODER_MESURMENT_FREQUENCY 2
+#include <math.h>
+
+
+
+#define ENCODER_1_RESOLUTION	14
+#define ENCODER_2_RESOLUTION	26
+
+#define TIMER_CONF_BOTH_EDGE_T1T2	4
+
+#define MOTOR_1_GEAR		48
+#define MOTOR_2_GEAR		48
+
+#define	TIMER_FREQENCY	10
+#define	SECOND_IN_MINUTE	60
+
 
 /* USER CODE END Includes */
 
@@ -62,10 +76,99 @@ void SystemClock_Config(void);
 
 volatile uint32_t speed_L;
 volatile uint32_t speed_R;
+volatile uint32_t count = 0;
+volatile uint32_t count1 = 0;
+
+
+typedef struct {
+    float Kp;
+    float Ki;
+    float Kd;
+    float setpoint;
+    float prev_error;
+    float integral;
+    float output;
+} PID_TypeDef;
+
+PID_TypeDef pid_L, pid_R;
+
+
+
+void PID_Init(PID_TypeDef *pid, float Kp, float Ki, float Kd, float setpoint) {
+    pid->Kp = Kp;
+    pid->Ki = Ki;
+    pid->Kd = Kd;
+    pid->setpoint = setpoint;
+    pid->prev_error = 0;
+    pid->integral = 0;
+    pid->output = 0;
+}
+
+
+typedef struct {
+    float x;
+    float y;
+    float theta;
+} Odometry_TypeDef;
+
+Odometry_TypeDef odom;
+
+void Odometry_Init(Odometry_TypeDef *odom) {
+    odom->x = 0.0f;
+    odom->y = 0.0f;
+    odom->theta = 0.0f;
+}
+
+
+void Update_Odometry(Odometry_TypeDef *odom, float speed_L, float speed_R, float dt) {
+    float wheel_base = 0.2f;
+    float wheel_radius = 0.05f;
+
+    // Convert speed from RPM to meters per second
+    float v_L = (speed_L / 60.0f) * (2 * M_PI * wheel_radius);
+    float v_R = (speed_R / 60.0f) * (2 * M_PI * wheel_radius);
+
+    // Calculate linear and angular velocities
+    float v = (v_L + v_R) / 2.0f;
+    float omega = (v_R - v_L) / 2 * wheel_base;
+
+    // Update position and orientation
+    odom->x += v * cos(odom->theta) * dt;
+    odom->y += v * sin(odom->theta) * dt;
+    odom->theta += omega * dt;
+}
+
+
+
+typedef struct {
+    float x;
+    float y;
+} Target_TypeDef;
+
+Target_TypeDef target;
+
+void SetTarget(float x, float y) {
+    target.x = x;
+    target.y = y;
+}
+
+
+void CalculateTargetError(Odometry_TypeDef *odom, Target_TypeDef *target, float *distance, float *angle) {
+    float dx = target->x - odom->x;
+    float dy = target->y - odom->y;
+    *distance = sqrt(dx * dx + dy * dy);
+    *angle = atan2(dy, dx) - odom->theta;
+    if (*angle > M_PI) *angle -= 2 * M_PI;
+    if (*angle < -M_PI) *angle += 2 * M_PI;
+}
+
+
+
 
 void UART_Transmit(const char *data) {
     HAL_UART_Transmit(&huart2, (uint8_t *)data, strlen(data), HAL_MAX_DELAY);
 }
+
 
 void SetMotorDirection(int direction_L, int direction_R) {
 
@@ -86,7 +189,6 @@ void SetMotorDirection(int direction_L, int direction_R) {
           }
 
 }
-
 
 
 void ReadSensorOutput() {
@@ -115,14 +217,30 @@ int _write(int file, char* ptr, int len){
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
     if(htim == &htim6){
 
-    	speed_L = ENCODER_MESURMENT_FREQUENCY * __HAL_TIM_GET_COUNTER(&htim2);
+    	speed_L = ( TIMER_FREQENCY * __HAL_TIM_GET_COUNTER(&htim2) * SECOND_IN_MINUTE) / ( MOTOR_1_GEAR * ENCODER_1_RESOLUTION * TIMER_CONF_BOTH_EDGE_T1T2);
     	htim2.Instance->CNT = 0;
 
-    	speed_R = ENCODER_MESURMENT_FREQUENCY * __HAL_TIM_GET_COUNTER(&htim3);
+    	speed_R = ( TIMER_FREQENCY * __HAL_TIM_GET_COUNTER(&htim3) * SECOND_IN_MINUTE) / ( MOTOR_2_GEAR * ENCODER_2_RESOLUTION * TIMER_CONF_BOTH_EDGE_T1T2);
     	htim3.Instance->CNT = 0;
 
     }
 }
+
+
+float PID_Compute(PID_TypeDef *pid, float current_value) {
+
+    float error = pid->setpoint - current_value;
+    pid->integral += error;
+    float derivative = error - pid->prev_error;
+
+    pid->output = (pid->Kp * error) + (pid->Ki * pid->integral) + (pid->Kd * derivative);
+    pid->prev_error = error;
+
+
+    return pid->output;
+}
+
+
 
 /* USER CODE END 0 */
 
@@ -134,8 +252,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-	uint32_t count = 0;
-	uint32_t count1 = 0;
+
 
   /* USER CODE END 1 */
 
@@ -165,16 +282,25 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 100);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 100);
+  //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 100);
+  //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 100);
 
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
 
   HAL_TIM_Base_Start_IT(&htim6);
 
+  Odometry_Init(&odom);
+
+  PID_Init(&pid_L, 2, 0.1, 0.2, 50);
+  PID_Init(&pid_R, 2, 0.1, 0.2, 50);
+
+  uint32_t prev_time = HAL_GetTick();
+
 
   SetMotorDirection(0,0);
+
+  SetTarget(10.0f, 5.0f);
 
 
   /* USER CODE END 2 */
@@ -183,24 +309,38 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  count = __HAL_TIM_GET_COUNTER(&htim2);
-	  count1 = __HAL_TIM_GET_COUNTER(&htim3);
 
+      	  count = __HAL_TIM_GET_COUNTER(&htim2);
+      	  count1 = __HAL_TIM_GET_COUNTER(&htim3);
 
+          uint32_t current_time = HAL_GetTick();
+          float dt = (current_time - prev_time) / 1000.0f;
+          prev_time = current_time;
 
-		 printf("%ld\n\r", speed_L);
-		 printf("%ld\n\r", speed_R);
+          float distance, angle;
+          CalculateTargetError(&odom, &target, &distance, &angle);
 
+          // Update PID setpoints
+          pid_L.setpoint = distance;
+          pid_R.setpoint = angle;
 
-		 printf("prawy enkoder   %ld\n\r", count);
-		 printf("lewy enkoder   %ld\n\r", count1);
+          // Calculate speed using PID controllers
+          float speed_L = PID_Compute(&pid_L, 0);
+          float speed_R = PID_Compute(&pid_R, 0);
 
+          // Update motor speeds
+          //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, speed_L);
+          //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, speed_R);
 
-		 HAL_Delay(500);
+          // Update odometry
+          Update_Odometry(&odom, speed_L, speed_R, dt);
 
-		 __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-		 __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+          // Print odometry and target data for debugging
+          printf("Position: x = %.2f, y = %.2f, theta = %.2f\n\r", odom.x, odom.y, odom.theta);
+          printf("Target: x = %.2f, y = %.2f\n\r", target.x, target.y);
+          printf("Distance to target: %.2f, Angle to target: %.2f\n\r", distance, angle);
 
+          HAL_Delay(50);
 
 
 

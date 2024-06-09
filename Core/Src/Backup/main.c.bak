@@ -26,7 +26,7 @@
 /* USER CODE BEGIN Includes */
 #include <string.h>
 #include <stdio.h>
-
+#define ENCODER_MESURMENT_FREQUENCY 1
 
 /* USER CODE END Includes */
 
@@ -59,6 +59,39 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+volatile uint32_t speed_L;
+volatile uint32_t speed_R;
+volatile uint32_t count = 0;
+volatile uint32_t count1 = 0;
+
+
+typedef struct {
+    float Kp;
+    float Ki;
+    float Kd;
+    float setpoint;
+    float prev_error;
+    float integral;
+    float output;
+} PID_TypeDef;
+
+PID_TypeDef pid_L, pid_R;
+
+
+
+void PID_Init(PID_TypeDef *pid, float Kp, float Ki, float Kd, float setpoint) {
+    pid->Kp = Kp;
+    pid->Ki = Ki;
+    pid->Kd = Kd;
+    pid->setpoint = setpoint;
+    pid->prev_error = 0;
+    pid->integral = 0;
+    pid->output = 0;
+}
+
+
+
 
 void UART_Transmit(const char *data) {
     HAL_UART_Transmit(&huart2, (uint8_t *)data, strlen(data), HAL_MAX_DELAY);
@@ -109,6 +142,36 @@ int _write(int file, char* ptr, int len){
 }
 
 
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+    if(htim == &htim6){
+
+    	speed_L =  2.15 * ENCODER_MESURMENT_FREQUENCY * __HAL_TIM_GET_COUNTER(&htim2) ;
+    	htim2.Instance->CNT = 0;
+
+    	speed_R =  ENCODER_MESURMENT_FREQUENCY * __HAL_TIM_GET_COUNTER(&htim3) ;
+    	htim3.Instance->CNT = 0;
+
+    }
+}
+
+
+float PID_Compute(PID_TypeDef *pid, float current_value) {
+    float error = pid->setpoint - current_value;
+    pid->integral += error;
+    float derivative = error - pid->prev_error;
+
+    pid->output = (pid->Kp * error) + (pid->Ki * pid->integral) + (pid->Kd * derivative);
+    pid->prev_error = error;
+
+    // Ogranicz wyjście PID do wartości akceptowanych przez PWM
+    if (pid->output > 100) pid->output = 100;
+    if (pid->output < 0) pid->output = 0;
+
+    return pid->output;
+}
+
+
+
 /* USER CODE END 0 */
 
 /**
@@ -119,8 +182,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-	uint32_t count = 0;
-	uint32_t count1 = 0;
+
 
   /* USER CODE END 1 */
 
@@ -146,14 +208,21 @@ int main(void)
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 256);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 200);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 100);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 100);
 
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
+
+  HAL_TIM_Base_Start_IT(&htim6);
+
+
+  PID_Init(&pid_L, 0, 0, 0, 50);
+  PID_Init(&pid_R, 0, 0, 0, 50);
 
 
   SetMotorDirection(0,0);
@@ -165,17 +234,24 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  count = __HAL_TIM_GET_COUNTER(&htim2);
-	  count1 = __HAL_TIM_GET_COUNTER(&htim3);
+      count = __HAL_TIM_GET_COUNTER(&htim2);
+      count1 = __HAL_TIM_GET_COUNTER(&htim3);
 
-  if (count >= 3000){
-	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-	  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+      float pwm_L = PID_Compute(&pid_L, speed_L);
+      float pwm_R = PID_Compute(&pid_R, speed_R);
 
-  }
-		 printf("%ld\n\r", count);
-		 printf("%ld\n\r", count1);
-		 HAL_Delay(50);
+      //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_L);
+      //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pwm_R);
+
+      printf("%ld\n\r", speed_L);
+      printf("%ld\n\r", speed_R);
+
+      printf("prawy enkoder   %ld\n\r", count);
+      printf("lewy enkoder   %ld\n\r", count1);
+
+      HAL_Delay(500);
+
+
 
 
 
