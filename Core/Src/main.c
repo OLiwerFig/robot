@@ -27,19 +27,25 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <stdlib.h>
 
+
+#define UART_BUFFER_SIZE 			64
+#define TIMER_CONF_BOTH_EDGE_T1T2	4
+#define	TIMER_FREQUENCY				10
+#define	SECOND_IN_MINUTE			60
 
 
 #define ENCODER_1_RESOLUTION	14
-#define ENCODER_2_RESOLUTION	26
+#define ENCODER_2_RESOLUTION	14
 
-#define TIMER_CONF_BOTH_EDGE_T1T2	4
+#define MOTOR_1_GEAR			48
+#define MOTOR_2_GEAR			48
 
-#define MOTOR_1_GEAR		48
-#define MOTOR_2_GEAR		48
 
-#define	TIMER_FREQENCY	10
-#define	SECOND_IN_MINUTE	60
+#define WHEEL_RADIUS 			0.035
+#define WHEEL_BASE 				0.15
+
 
 
 /* USER CODE END Includes */
@@ -68,16 +74,29 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+void ProcessReceivedData(uint8_t* data, uint16_t length);
+void SetTarget(float x, float y);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-volatile uint32_t speed_L;
-volatile uint32_t speed_R;
+volatile uint32_t speed_L = 0;
+volatile uint32_t speed_R = 0;
 volatile uint32_t count = 0;
 volatile uint32_t count1 = 0;
+
+uint8_t uartBuffer[UART_BUFFER_SIZE];
+
+float speed_L_target, speed_R_target, pwm_R, pwm_L, dt;
+
+
+
+volatile int pid_iterations = 0;
+volatile float distance;
+
+
 
 
 typedef struct {
@@ -88,7 +107,9 @@ typedef struct {
     float prev_error;
     float integral;
     float output;
+    uint32_t prev_time;
 } PID_TypeDef;
+
 
 PID_TypeDef pid_L, pid_R;
 
@@ -102,7 +123,15 @@ void PID_Init(PID_TypeDef *pid, float Kp, float Ki, float Kd, float setpoint) {
     pid->prev_error = 0;
     pid->integral = 0;
     pid->output = 0;
+    pid->prev_time = HAL_GetTick();
 }
+
+
+void SetSpeed(PID_TypeDef *pid, float setpoint) {
+	pid->setpoint = setpoint;
+
+}
+
 
 
 typedef struct {
@@ -120,22 +149,44 @@ void Odometry_Init(Odometry_TypeDef *odom) {
 }
 
 
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+    if (htim == &htim6) {
+
+    	uint32_t encoder_count_L = __HAL_TIM_GET_COUNTER(&htim2);
+        uint32_t encoder_count_R = __HAL_TIM_GET_COUNTER(&htim3);
+
+
+        htim2.Instance->CNT = 0;
+        htim3.Instance->CNT = 0;
+
+
+        float distance_L = (float)encoder_count_L / 120.0f;
+        float distance_R = (float)encoder_count_R / 120.0f;
+
+        float pre_speed_L = distance_L * TIMER_FREQUENCY;
+        if (pre_speed_L < 300) speed_L = pre_speed_L;
+
+        float pre_speed_R = distance_R * TIMER_FREQUENCY;
+        if (pre_speed_R < 300) speed_R = pre_speed_R;
+
+
+    }
+}
+
+
 void Update_Odometry(Odometry_TypeDef *odom, float speed_L, float speed_R, float dt) {
-    float wheel_base = 0.2f;
-    float wheel_radius = 0.05f;
 
-    // Convert speed from RPM to meters per second
-    float v_L = (speed_L / 60.0f) * (2 * M_PI * wheel_radius);
-    float v_R = (speed_R / 60.0f) * (2 * M_PI * wheel_radius);
+    float v_L = speed_L / 100.0;
+    float v_R = speed_R / 100.0;
 
-    // Calculate linear and angular velocities
-    float v = (v_L + v_R) / 2.0f;
-    float omega = (v_R - v_L) / 2 * wheel_base;
 
-    // Update position and orientation
+    float v = (v_L + v_R) / 2.0;
+    float omega = (v_R - v_L) / WHEEL_BASE;
+
+    // Aktualizuj pozycje
+    odom->theta += omega * dt;
     odom->x += v * cos(odom->theta) * dt;
     odom->y += v * sin(odom->theta) * dt;
-    odom->theta += omega * dt;
 }
 
 
@@ -147,26 +198,86 @@ typedef struct {
 
 Target_TypeDef target;
 
+
 void SetTarget(float x, float y) {
     target.x = x;
     target.y = y;
+
+    //char buffer[50];
+    //int len = sprintf(buffer, "%.2f %.2f\n", x, y);
+    //HAL_UART_Transmit(&huart2, (uint8_t *)buffer, len, HAL_MAX_DELAY);
+
+
 }
 
 
-void CalculateTargetError(Odometry_TypeDef *odom, Target_TypeDef *target, float *distance, float *angle) {
+
+
+
+void CalculateTargetSpeed(Odometry_TypeDef *odom, Target_TypeDef *target, float *speed_L_target, float *speed_R_target) {
     float dx = target->x - odom->x;
     float dy = target->y - odom->y;
-    *distance = sqrt(dx * dx + dy * dy);
-    *angle = atan2(dy, dx) - odom->theta;
-    if (*angle > M_PI) *angle -= 2 * M_PI;
-    if (*angle < -M_PI) *angle += 2 * M_PI;
+    distance = sqrt(dx * dx + dy * dy);
+    float angle_to_target = atan2(dy, dx);
+    //printf("dx: %f, dy: %f, distance: %f\n\r", dx, dy, distance);
+
+
+
+    float angle_error = angle_to_target - odom->theta;
+    if (angle_error > M_PI) angle_error -= 2 * M_PI;
+    if (angle_error < -M_PI) angle_error += 2 * M_PI;
+
+    // Parametry do dostosowania
+    float max_linear_speed = 120.0f;
+    float max_angular_speed = 1000.0f;
+    float linear_speed_kp = 60.0f;
+    float angular_speed_kp = 10.0f;
+
+
+    float linear_speed = linear_speed_kp * distance;
+    if (linear_speed > max_linear_speed) {
+        linear_speed = max_linear_speed;
+    }
+
+    float angular_speed = angular_speed_kp * angle_error;
+    if (angular_speed > max_angular_speed) {
+        angular_speed = max_angular_speed;
+    } else if (angular_speed < -max_angular_speed) {
+        angular_speed = -max_angular_speed;
+    }
+
+
+    *speed_L_target = linear_speed - (WHEEL_BASE / 2) * angular_speed;
+    *speed_R_target = linear_speed + (WHEEL_BASE / 2) * angular_speed;
 }
 
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2) {
+
+        ProcessReceivedData(uartBuffer, UART_BUFFER_SIZE);
+        HAL_UART_Receive_IT(&huart2, uartBuffer, UART_BUFFER_SIZE);
+    }
+}
 
 
 
 void UART_Transmit(const char *data) {
     HAL_UART_Transmit(&huart2, (uint8_t *)data, strlen(data), HAL_MAX_DELAY);
+}
+
+void ProcessReceivedData(uint8_t* data, uint16_t length)
+{
+    if (length >= sizeof(float) * 2) {
+        float targetX, targetY;
+        memcpy(&targetX, data, sizeof(float));
+        memcpy(&targetY, data + sizeof(float), sizeof(float));
+        SetTarget(targetX, targetY);
+        //printf("Otrzymano targetX: %f, targetY: %f\n", 1.0f, 1.0f);
+
+        //PID_Init(&pid_L, 3, 0.1, 0.2, targetY);
+        //PID_Init(&pid_R, 3, 0.1, 0.2, targetX);
+    }
 }
 
 
@@ -181,64 +292,64 @@ void SetMotorDirection(int direction_L, int direction_R) {
     }
 
     if (direction_R == 1) {
-              HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
-              HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
-          } else {
-              HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_RESET);
-              HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
-          }
-
-}
-
-
-void ReadSensorOutput() {
-    GPIO_PinState output1 = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8);
-    GPIO_PinState output2 = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9);
-
-    if (output1 == 1) {
-        UART_Transmit("Sensor 1: Object detected\r\n");
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
     } else {
-        UART_Transmit("Sensor 1: No object detected\r\n");
-    }
-
-    if (output2 == 1) {
-        UART_Transmit("Sensor 2: Object detected\r\n");
-    } else {
-        UART_Transmit("Sensor 2: No object detected\r\n");
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
     }
 }
+
 
 int _write(int file, char* ptr, int len){
 	HAL_UART_Transmit(&huart2, (uint8_t *)ptr, len, HAL_MAX_DELAY);
 	return len;
 }
 
+void SendDataToQt(Odometry_TypeDef *odom, Target_TypeDef *target ,float pwm_L ,float pwm_R,  float speed_L, float speed_R) {
 
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
-    if(htim == &htim6){
-
-    	speed_L = ( TIMER_FREQENCY * __HAL_TIM_GET_COUNTER(&htim2) * SECOND_IN_MINUTE) / ( MOTOR_1_GEAR * ENCODER_1_RESOLUTION * TIMER_CONF_BOTH_EDGE_T1T2);
-    	htim2.Instance->CNT = 0;
-
-    	speed_R = ( TIMER_FREQENCY * __HAL_TIM_GET_COUNTER(&htim3) * SECOND_IN_MINUTE) / ( MOTOR_2_GEAR * ENCODER_2_RESOLUTION * TIMER_CONF_BOTH_EDGE_T1T2);
-    	htim3.Instance->CNT = 0;
-
-    }
+    char buffer[100];
+    sprintf(buffer, "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f\n", speed_L, speed_R, pwm_L, pwm_R, odom->x, odom->y, odom->theta, target->x, target->y);
+    HAL_UART_Transmit(&huart2, (uint8_t *)buffer, strlen(buffer), HAL_MAX_DELAY);
 }
 
 
-float PID_Compute(PID_TypeDef *pid, float current_value) {
 
+
+
+
+
+float PID_Compute(PID_TypeDef *pid, float current_value, float dt) {
     float error = pid->setpoint - current_value;
-    pid->integral += error;
-    float derivative = error - pid->prev_error;
+
+
+    pid->integral += error * dt;
+
+
+    float derivative = (error - pid->prev_error) / dt;
+
 
     pid->output = (pid->Kp * error) + (pid->Ki * pid->integral) + (pid->Kd * derivative);
     pid->prev_error = error;
 
+    if (pid_iterations < 4) {
+        if (pid->output > 30) pid->output  = 30;
+        if (pid->output < 0) pid->output  = 0;
+    } else {
+        if (pid->output > 1000) pid->output  = 1000;
+        if (pid->output < 0) pid->output  = 0;
+
+    }
+
+    pid_iterations++;
 
     return pid->output;
 }
+
+
+
+
+
 
 
 
@@ -280,27 +391,33 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
+
+  HAL_UART_Receive_IT(&huart2, uartBuffer, UART_BUFFER_SIZE);
+
+
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-  //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 100);
-  //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 100);
+
 
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
+
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
 
   HAL_TIM_Base_Start_IT(&htim6);
 
   Odometry_Init(&odom);
 
-  PID_Init(&pid_L, 2, 0.1, 0.2, 50);
-  PID_Init(&pid_R, 2, 0.1, 0.2, 50);
-
   uint32_t prev_time = HAL_GetTick();
-
 
   SetMotorDirection(0,0);
 
-  SetTarget(10.0f, 5.0f);
+  PID_Init(&pid_L, 6, 1.5, 0.1, 1);
+  PID_Init(&pid_R, 6, 1.5, 0.3, 1);
+
+
+  SetTarget(0.5f,0);
 
 
   /* USER CODE END 2 */
@@ -310,39 +427,66 @@ int main(void)
   while (1)
   {
 
-      	  count = __HAL_TIM_GET_COUNTER(&htim2);
-      	  count1 = __HAL_TIM_GET_COUNTER(&htim3);
-
-          uint32_t current_time = HAL_GetTick();
-          float dt = (current_time - prev_time) / 1000.0f;
-          prev_time = current_time;
-
-          float distance, angle;
-          CalculateTargetError(&odom, &target, &distance, &angle);
-
-          // Update PID setpoints
-          pid_L.setpoint = distance;
-          pid_R.setpoint = angle;
-
-          // Calculate speed using PID controllers
-          float speed_L = PID_Compute(&pid_L, 0);
-          float speed_R = PID_Compute(&pid_R, 0);
-
-          // Update motor speeds
-          //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, speed_L);
-          //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, speed_R);
-
-          // Update odometry
-          Update_Odometry(&odom, speed_L, speed_R, dt);
-
-          // Print odometry and target data for debugging
-          printf("Position: x = %.2f, y = %.2f, theta = %.2f\n\r", odom.x, odom.y, odom.theta);
-          printf("Target: x = %.2f, y = %.2f\n\r", target.x, target.y);
-          printf("Distance to target: %.2f, Angle to target: %.2f\n\r", distance, angle);
-
-          HAL_Delay(50);
+	    uint32_t current_time = HAL_GetTick();
+	    dt = (current_time - prev_time) / 1000.0f;
+	    prev_time = current_time;
 
 
+	    // Aktulaizowanie polozenia
+	    Update_Odometry(&odom, speed_L, speed_R, dt);
+
+
+	    // Obliczanie predkosci
+	    CalculateTargetSpeed(&odom, &target, &speed_L_target, &speed_R_target);
+
+
+	    // Sprawdzenie, czy robot osiągnął cel
+	    if (distance < 0.1) {
+	        speed_L_target = 0;
+	        speed_R_target = 0;
+	        pid_L.integral = 0;
+	        pid_R.integral = 0;
+	        //printf("dojechales do celuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu");
+	    }
+
+
+	    // Ustawanie predkosci do regulatorow pid
+	    pid_L.setpoint = speed_L_target;
+	    pid_R.setpoint = speed_R_target;
+
+	    //pid_L.setpoint = 50;
+	    //pid_R.setpoint = 50;
+
+
+	    // Obliczanie wypeniania PWM przez regultor pid
+	    pwm_L = PID_Compute(&pid_L, speed_L, dt);
+	    pwm_R = PID_Compute(&pid_R, speed_R, dt);
+
+	    //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 100);
+	    //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 100);
+
+
+	    // Nadawanie silnika odpowiedniego pwm
+	    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_L);
+	    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pwm_R);
+
+
+	    SendDataToQt(&odom, &target ,pwm_L ,pwm_R ,speed_L ,speed_R);
+
+
+
+
+	    //printf("PWM values - Left: %.2f, Right: %.2f\n\r", pwm_L, pwm_R);
+
+	    /*
+	    printf("Position: x = %.2f, y = %.2f, theta = %.2f dystans do celu jest rowny : %.2f\n\r", odom.x, odom.y, odom.theta, distance_to_target);
+	    printf("Target: x = %.2f, y = %.2f \n\r", target.x, target.y);
+	    printf("Speed L target: %.2f, Speed R target: %.2f\n\r", speed_L_target, speed_R_target);
+	    printf("rzzezczywiste predkosci  rowne lewe kolo  : %.2ld, prawe kolo : %.2ld\n\r", speed_L, speed_R);
+		*/
+
+
+	    HAL_Delay(100);
 
     /* USER CODE END WHILE */
 
