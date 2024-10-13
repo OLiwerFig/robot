@@ -2,22 +2,19 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
+  * @brief          : Główny plik programu
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
+  * Prawa autorskie (c) 2024 STMicroelectronics.
+  * Wszelkie prawa zastrzeżone.
   *
   ******************************************************************************
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "i2c.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -28,77 +25,12 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
-
-
-#define UART_BUFFER_SIZE 			64
-#define TIMER_CONF_BOTH_EDGE_T1T2	4
-#define	TIMER_FREQUENCY				10
-#define	SECOND_IN_MINUTE			60
-
-
-#define ENCODER_1_RESOLUTION	14
-#define ENCODER_2_RESOLUTION	14
-
-#define MOTOR_1_GEAR			48
-#define MOTOR_2_GEAR			48
-
-
-#define WHEEL_RADIUS 			0.035
-#define WHEEL_BASE 				0.15
-
-
-
+#include "vl53l5cx_api.h"
+#include "platform.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-
-/* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
-/* USER CODE END PM */
-
-/* Private variables ---------------------------------------------------------*/
-
-/* USER CODE BEGIN PV */
-
-/* USER CODE END PV */
-
-/* Private function prototypes -----------------------------------------------*/
-void SystemClock_Config(void);
-/* USER CODE BEGIN PFP */
-void ProcessReceivedData(uint8_t* data, uint16_t length);
-void SetTarget(float x, float y);
-
-/* USER CODE END PFP */
-
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-
-volatile uint32_t speed_L = 0;
-volatile uint32_t speed_R = 0;
-volatile uint32_t count = 0;
-volatile uint32_t count1 = 0;
-
-uint8_t uartBuffer[UART_BUFFER_SIZE];
-
-float speed_L_target, speed_R_target, pwm_R, pwm_L, dt;
-
-
-
-volatile int pid_iterations = 0;
-volatile float distance;
-
-
-
-
 typedef struct {
     float Kp;
     float Ki;
@@ -110,11 +42,136 @@ typedef struct {
     uint32_t prev_time;
 } PID_TypeDef;
 
+typedef struct {
+    float x;
+    float y;
+    float theta;
+} Odometry_TypeDef;
+
+typedef struct {
+    float x;
+    float y;
+} Target_TypeDef;
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+#define UART_BUFFER_SIZE              64
+#define TIMER_CONF_BOTH_EDGE_T1T2     4
+#define TIMER_FREQUENCY               10
+#define SECOND_IN_MINUTE              60
+
+#define ENCODER_1_RESOLUTION    14
+#define ENCODER_2_RESOLUTION    14
+
+#define MOTOR_1_GEAR            48
+#define MOTOR_2_GEAR            48
+
+#define WHEEL_RADIUS            0.035
+#define WHEEL_BASE              0.15
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+
+/* USER CODE BEGIN PV */
+// Zmienne globalne
+VL53L5CX_Configuration dev;
+VL53L5CX_ResultsData results;
+uint16_t sensor_address = VL53L5CX_DEFAULT_I2C_ADDRESS; // Adres czujnika
+
+volatile uint32_t speed_L = 0;
+volatile uint32_t speed_R = 0;
+volatile uint32_t count = 0;
+volatile uint32_t count1 = 0;
+
+uint8_t uartBuffer[UART_BUFFER_SIZE];
+
+float speed_L_target, speed_R_target, pwm_R, pwm_L, dt;
+
+volatile int pid_iterations = 0;
+volatile float distance;
 
 PID_TypeDef pid_L, pid_R;
 
+Odometry_TypeDef odom;
+Target_TypeDef target;
 
+/* USER CODE END PV */
 
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+/* USER CODE BEGIN PFP */
+// Deklaracje funkcji
+void ProcessReceivedData(uint8_t* data, uint16_t length);
+void SetTarget(float x, float y);
+void Scan_I2C_Devices(void);
+void Initialize_Sensor(void);
+void ProcessData(VL53L5CX_ResultsData *results);
+void Update_Odometry(Odometry_TypeDef *odom, float speed_L, float speed_R, float dt);
+void PID_Init(PID_TypeDef *pid, float Kp, float Ki, float Kd, float setpoint);
+float PID_Compute(PID_TypeDef *pid, float current_value, float dt);
+void SetSpeed(PID_TypeDef *pid, float setpoint);
+void SetMotorDirection(int direction_L, int direction_R);
+void SendDataToQt(Odometry_TypeDef *odom, Target_TypeDef *target ,float pwm_L ,float pwm_R,  float speed_L, float speed_R);
+void Odometry_Init(Odometry_TypeDef *odom);
+void CalculateTargetSpeed(Odometry_TypeDef *odom, Target_TypeDef *target, float *speed_L_target, float *speed_R_target);
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+// Funkcja do obsługi printf przez UART
+int _write(int file, char* ptr, int len){
+    HAL_UART_Transmit(&huart2, (uint8_t *)ptr, len, HAL_MAX_DELAY);
+    return len;
+}
+
+// Funkcja wywoływana przy przepełnieniu timera
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+    if (htim == &htim6) {
+
+        count = __HAL_TIM_GET_COUNTER(&htim2);
+        count1 = __HAL_TIM_GET_COUNTER(&htim3);
+
+        htim2.Instance->CNT = 0;
+        htim3.Instance->CNT = 0;
+
+        // Obliczanie prędkości na podstawie enkoderów
+        speed_L = count;   // Dostosuj zgodnie z rozdzielczością enkodera
+        speed_R = count1;
+
+        // Tutaj możesz dodać dodatkowe obliczenia prędkości
+    }
+}
+
+// Funkcja do przetwarzania danych odebranych przez UART
+void ProcessReceivedData(uint8_t* data, uint16_t length)
+{
+    if (length >= sizeof(float) * 2) {
+        float targetX, targetY;
+        memcpy(&targetX, data, sizeof(float));
+        memcpy(&targetY, data + sizeof(float), sizeof(float));
+        SetTarget(targetX, targetY);
+    }
+}
+
+// Callback dla przerwania UART
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2) {
+        ProcessReceivedData(uartBuffer, UART_BUFFER_SIZE);
+        HAL_UART_Receive_IT(&huart2, uartBuffer, UART_BUFFER_SIZE);
+    }
+}
+
+// Inicjalizacja regulatora PID
 void PID_Init(PID_TypeDef *pid, float Kp, float Ki, float Kd, float setpoint) {
     pid->Kp = Kp;
     pid->Ki = Ki;
@@ -126,59 +183,22 @@ void PID_Init(PID_TypeDef *pid, float Kp, float Ki, float Kd, float setpoint) {
     pid->prev_time = HAL_GetTick();
 }
 
-
+// Ustawienie nowego setpointu dla regulatora PID
 void SetSpeed(PID_TypeDef *pid, float setpoint) {
-	pid->setpoint = setpoint;
-
+    pid->setpoint = setpoint;
 }
 
-
-
-typedef struct {
-    float x;
-    float y;
-    float theta;
-} Odometry_TypeDef;
-
-Odometry_TypeDef odom;
-
+// Inicjalizacja odometrii
 void Odometry_Init(Odometry_TypeDef *odom) {
     odom->x = 0.0f;
     odom->y = 0.0f;
     odom->theta = 0.0f;
 }
 
-
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
-    if (htim == &htim6) {
-
-    	uint32_t encoder_count_L = __HAL_TIM_GET_COUNTER(&htim2);
-        uint32_t encoder_count_R = __HAL_TIM_GET_COUNTER(&htim3);
-
-
-        htim2.Instance->CNT = 0;
-        htim3.Instance->CNT = 0;
-
-
-        float distance_L = (float)encoder_count_L / 120.0f;
-        float distance_R = (float)encoder_count_R / 120.0f;
-
-        float pre_speed_L = distance_L * TIMER_FREQUENCY;
-        if (pre_speed_L < 300) speed_L = pre_speed_L;
-
-        float pre_speed_R = distance_R * TIMER_FREQUENCY;
-        if (pre_speed_R < 300) speed_R = pre_speed_R;
-
-
-    }
-}
-
-
+// Aktualizacja odometrii
 void Update_Odometry(Odometry_TypeDef *odom, float speed_L, float speed_R, float dt) {
-
-    float v_L = speed_L / 100.0;
-    float v_R = speed_R / 100.0;
-
+    float v_L = speed_L * (2 * M_PI * WHEEL_RADIUS) / (ENCODER_1_RESOLUTION * MOTOR_1_GEAR);
+    float v_R = speed_R * (2 * M_PI * WHEEL_RADIUS) / (ENCODER_2_RESOLUTION * MOTOR_2_GEAR);
 
     float v = (v_L + v_R) / 2.0;
     float omega = (v_R - v_L) / WHEEL_BASE;
@@ -189,39 +209,18 @@ void Update_Odometry(Odometry_TypeDef *odom, float speed_L, float speed_R, float
     odom->y += v * sin(odom->theta) * dt;
 }
 
-
-
-typedef struct {
-    float x;
-    float y;
-} Target_TypeDef;
-
-Target_TypeDef target;
-
-
+// Ustawienie nowego celu
 void SetTarget(float x, float y) {
     target.x = x;
     target.y = y;
-
-    //char buffer[50];
-    //int len = sprintf(buffer, "%.2f %.2f\n", x, y);
-    //HAL_UART_Transmit(&huart2, (uint8_t *)buffer, len, HAL_MAX_DELAY);
-
-
 }
 
-
-
-
-
+// Obliczanie prędkości docelowych dla silników
 void CalculateTargetSpeed(Odometry_TypeDef *odom, Target_TypeDef *target, float *speed_L_target, float *speed_R_target) {
     float dx = target->x - odom->x;
     float dy = target->y - odom->y;
     distance = sqrt(dx * dx + dy * dy);
     float angle_to_target = atan2(dy, dx);
-    //printf("dx: %f, dy: %f, distance: %f\n\r", dx, dy, distance);
-
-
 
     float angle_error = angle_to_target - odom->theta;
     if (angle_error > M_PI) angle_error -= 2 * M_PI;
@@ -232,7 +231,6 @@ void CalculateTargetSpeed(Odometry_TypeDef *odom, Target_TypeDef *target, float 
     float max_angular_speed = 1000.0f;
     float linear_speed_kp = 60.0f;
     float angular_speed_kp = 10.0f;
-
 
     float linear_speed = linear_speed_kp * distance;
     if (linear_speed > max_linear_speed) {
@@ -246,43 +244,12 @@ void CalculateTargetSpeed(Odometry_TypeDef *odom, Target_TypeDef *target, float 
         angular_speed = -max_angular_speed;
     }
 
-
     *speed_L_target = linear_speed - (WHEEL_BASE / 2) * angular_speed;
     *speed_R_target = linear_speed + (WHEEL_BASE / 2) * angular_speed;
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART2) {
-
-        ProcessReceivedData(uartBuffer, UART_BUFFER_SIZE);
-        HAL_UART_Receive_IT(&huart2, uartBuffer, UART_BUFFER_SIZE);
-    }
-}
-
-
-
-void UART_Transmit(const char *data) {
-    HAL_UART_Transmit(&huart2, (uint8_t *)data, strlen(data), HAL_MAX_DELAY);
-}
-
-void ProcessReceivedData(uint8_t* data, uint16_t length)
-{
-    if (length >= sizeof(float) * 2) {
-        float targetX, targetY;
-        memcpy(&targetX, data, sizeof(float));
-        memcpy(&targetY, data + sizeof(float), sizeof(float));
-        SetTarget(targetX, targetY);
-        //printf("Otrzymano targetX: %f, targetY: %f\n", 1.0f, 1.0f);
-
-        //PID_Init(&pid_L, 3, 0.1, 0.2, targetY);
-        //PID_Init(&pid_R, 3, 0.1, 0.2, targetX);
-    }
-}
-
-
+// Ustawienie kierunku obrotu silników
 void SetMotorDirection(int direction_L, int direction_R) {
-
     if (direction_L == 1) {
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);
@@ -292,42 +259,28 @@ void SetMotorDirection(int direction_L, int direction_R) {
     }
 
     if (direction_R == 1) {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
-    } else {
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_RESET);
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
+    } else {
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
     }
 }
 
-
-int _write(int file, char* ptr, int len){
-	HAL_UART_Transmit(&huart2, (uint8_t *)ptr, len, HAL_MAX_DELAY);
-	return len;
-}
-
+// Wysyłanie danych do aplikacji Qt
 void SendDataToQt(Odometry_TypeDef *odom, Target_TypeDef *target ,float pwm_L ,float pwm_R,  float speed_L, float speed_R) {
-
     char buffer[100];
     sprintf(buffer, "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f\n", speed_L, speed_R, pwm_L, pwm_R, odom->x, odom->y, odom->theta, target->x, target->y);
     HAL_UART_Transmit(&huart2, (uint8_t *)buffer, strlen(buffer), HAL_MAX_DELAY);
 }
 
-
-
-
-
-
-
+// Obliczanie wyjścia regulatora PID
 float PID_Compute(PID_TypeDef *pid, float current_value, float dt) {
     float error = pid->setpoint - current_value;
 
-
     pid->integral += error * dt;
 
-
     float derivative = (error - pid->prev_error) / dt;
-
 
     pid->output = (pid->Kp * error) + (pid->Ki * pid->integral) + (pid->Kd * derivative);
     pid->prev_error = error;
@@ -338,7 +291,6 @@ float PID_Compute(PID_TypeDef *pid, float current_value, float dt) {
     } else {
         if (pid->output > 1000) pid->output  = 1000;
         if (pid->output < 0) pid->output  = 0;
-
     }
 
     pid_iterations++;
@@ -346,174 +298,158 @@ float PID_Compute(PID_TypeDef *pid, float current_value, float dt) {
     return pid->output;
 }
 
-
-
-
-
-
-
-
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
+  * @brief  Główna funkcja programu.
   * @retval int
   */
 int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  // Inicjalizacja zmiennych, struktur, PID itd.
+  Odometry_Init(&odom);
+  PID_Init(&pid_L, 6, 1.5, 0.1, 1);
+  PID_Init(&pid_R, 6, 1.5, 0.3, 1);
+  SetTarget(0.5f, 0);
 
   /* USER CODE END 1 */
 
-  /* MCU Configuration--------------------------------------------------------*/
+  /* Inicjalizacja MCU --------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  /* Reset wszystkich peryferiów, inicjalizacja interfejsu Flash i Systicka. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  // Twoja inicjalizacja
   /* USER CODE END Init */
 
-  /* Configure the system clock */
+  /* Konfiguracja zegara systemowego */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  // Dodatkowa konfiguracja systemu, jeśli potrzebna
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
+  /* Inicjalizacja wszystkich skonfigurowanych peryferiów */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM6_Init();
+  MX_I2C3_Init(); // Upewnij się, że używasz odpowiedniego I2C
   /* USER CODE BEGIN 2 */
 
   HAL_UART_Receive_IT(&huart2, uartBuffer, UART_BUFFER_SIZE);
 
-
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-
 
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
 
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 200);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 200);
 
   HAL_TIM_Base_Start_IT(&htim6);
 
-  Odometry_Init(&odom);
+  // Skanowanie urządzeń I2C
+  Scan_I2C_Devices();
 
-  uint32_t prev_time = HAL_GetTick();
+  // Inicjalizacja czujnika
+  Initialize_Sensor();
+
+  // Start pomiarów z czujnika
+  printf("Rozpoczynanie pomiarów...\r\n");
+  int status = vl53l5cx_start_ranging(&dev);
+  if (status == VL53L5CX_STATUS_OK) {
+      printf("Pomiary rozpoczęte pomyślnie\r\n");
+  } else {
+      printf("Błąd rozpoczynania pomiarów, kod błędu: %d\r\n", status);
+  }
 
   SetMotorDirection(0,0);
 
-  PID_Init(&pid_L, 6, 1.5, 0.1, 1);
-  PID_Init(&pid_R, 6, 1.5, 0.3, 1);
-
-
-  SetTarget(0.5f,0);
-
+  uint32_t prev_time = HAL_GetTick();
 
   /* USER CODE END 2 */
 
-  /* Infinite loop */
+  /* Nieskończona pętla */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+      // Odczyt danych z czujnika
+      uint8_t isReady = 0;
+      status = vl53l5cx_check_data_ready(&dev, &isReady);
+      if (status == VL53L5CX_STATUS_OK && isReady) {
+          status = vl53l5cx_get_ranging_data(&dev, &results);
+          if (status == VL53L5CX_STATUS_OK) {
+              ProcessData(&results);
+          } else {
+              printf("Błąd odczytu danych z czujnika, kod błędu: %d\r\n", status);
+          }
+      } else {
+          printf("Czujnik nie ma nowych danych do odczytu\r\n");
+      }
 
-	    uint32_t current_time = HAL_GetTick();
-	    dt = (current_time - prev_time) / 1000.0f;
-	    prev_time = current_time;
-
-
-	    // Aktulaizowanie polozenia
-	    Update_Odometry(&odom, speed_L, speed_R, dt);
-
-
-	    // Obliczanie predkosci
-	    CalculateTargetSpeed(&odom, &target, &speed_L_target, &speed_R_target);
-
-
-	    // Sprawdzenie, czy robot osiągnął cel
-	    if (distance < 0.1) {
-	        speed_L_target = 0;
-	        speed_R_target = 0;
-	        pid_L.integral = 0;
-	        pid_R.integral = 0;
-	        //printf("dojechales do celuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu");
-	    }
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 200);
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 200);
 
 
-	    // Ustawanie predkosci do regulatorow pid
-	    pid_L.setpoint = speed_L_target;
-	    pid_R.setpoint = speed_R_target;
+      // Aktualizacja odometrii
+      uint32_t current_time = HAL_GetTick();
+      dt = (current_time - prev_time) / 1000.0f; // Konwersja ms na s
+      prev_time = current_time;
 
-	    //pid_L.setpoint = 50;
-	    //pid_R.setpoint = 50;
+      // Update_Odometry(&odom, speed_L, speed_R, dt);
 
+      // Obliczanie prędkości docelowych
+      //CalculateTargetSpeed(&odom, &target, &speed_L_target, &speed_R_target);
 
-	    // Obliczanie wypeniania PWM przez regultor pid
-	    pwm_L = PID_Compute(&pid_L, speed_L, dt);
-	    pwm_R = PID_Compute(&pid_R, speed_R, dt);
+      // Ustawienie nowego setpointu dla regulatorów PID
+      //SetSpeed(&pid_L, speed_L_target);
+      //SetSpeed(&pid_R, speed_R_target);
 
-	    //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 100);
-	    //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 100);
+      // Aktualizacja sterowania PID
+      //pwm_L = PID_Compute(&pid_L, speed_L, dt);
+      //pwm_R = PID_Compute(&pid_R, speed_R, dt);
 
+      // Sterowanie silnikami na podstawie wyjść z regulatorów PID
+      //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint32_t)pwm_L);
+      //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (uint32_t)pwm_R);
 
-	    // Nadawanie silnika odpowiedniego pwm
-	    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_L);
-	    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pwm_R);
+      // Wysyłanie danych do aplikacji Qt
+      //SendDataToQt(&odom, &target, pwm_L, pwm_R, speed_L, speed_R);
 
-
-	    SendDataToQt(&odom, &target ,pwm_L ,pwm_R ,speed_L ,speed_R);
-
-
-
-
-	    //printf("PWM values - Left: %.2f, Right: %.2f\n\r", pwm_L, pwm_R);
-
-	    /*
-	    printf("Position: x = %.2f, y = %.2f, theta = %.2f dystans do celu jest rowny : %.2f\n\r", odom.x, odom.y, odom.theta, distance_to_target);
-	    printf("Target: x = %.2f, y = %.2f \n\r", target.x, target.y);
-	    printf("Speed L target: %.2f, Speed R target: %.2f\n\r", speed_L_target, speed_R_target);
-	    printf("rzzezczywiste predkosci  rowne lewe kolo  : %.2ld, prawe kolo : %.2ld\n\r", speed_L, speed_R);
-		*/
-
-
-	    HAL_Delay(100);
+      HAL_Delay(10000); // Odpowiedni delay, aby nie przeciążać magistrali I2C
 
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    // Twoje pozostałe funkcje, np. odometria, PID, sterowanie silnikami itd.
   }
   /* USER CODE END 3 */
 }
 
 /**
-  * @brief System Clock Configuration
+  * @brief Konfiguracja zegara systemowego
   * @retval None
   */
 void SystemClock_Config(void)
 {
+  // Konfiguracja zegara systemowego
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Configure the main internal regulator output voltage
-  */
+  /** Konfiguracja głównego regulatora napięcia wewnętrznego */
   if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+  /** Inicjalizacja oscylatorów RCC zgodnie ze specyfikowanymi parametrami */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -529,8 +465,7 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
+  /** Inicjalizacja zegarów CPU, AHB i APB */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
@@ -546,36 +481,120 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+// Funkcja do przetwarzania danych z czujnika
+void ProcessData(VL53L5CX_ResultsData *results) {
+    printf("Czujnik:\n\r");
+    for (int i = 0; i < 64; i += 8) { // Wyświetlanie 8 pomiarów na linię
+        printf("Dystans %d-%d: %d mm, %d mm, %d mm, %d mm, %d mm, %d mm, %d mm, %d mm\n\r",
+               i, i+7,
+               results->distance_mm[i],
+               results->distance_mm[i+1],
+               results->distance_mm[i+2],
+               results->distance_mm[i+3],
+               results->distance_mm[i+4],
+               results->distance_mm[i+5],
+               results->distance_mm[i+6],
+               results->distance_mm[i+7]);
+    }
+}
+
+// Funkcja do inicjalizacji czujnika
+void Initialize_Sensor(void) {
+    uint8_t status;
+    uint8_t is_alive = 0;
+
+    for (int attempts = 0; attempts < 3; attempts++) {
+        printf("Initializing sensor, attempt %d...\r\n", attempts + 1);
+
+        // Reset sensor
+        VL53L5CX_Reset_Sensor(&dev.platform);
+
+        dev.platform.address = VL53L5CX_DEFAULT_I2C_ADDRESS;
+
+        // Check if the sensor is alive at the default address
+        status = vl53l5cx_is_alive(&dev, &is_alive);
+        printf("Sensor status (default address): %d, is_alive: %d\r\n", status, is_alive);
+
+        if (status == VL53L5CX_STATUS_OK && is_alive) {
+            // Initialize sensor
+            status = vl53l5cx_init(&dev);
+            if (status == VL53L5CX_STATUS_OK) {
+                printf("Sensor initialized with address 0x%02X\r\n", sensor_address);
+
+                // Set resolution to 8x8
+                status = vl53l5cx_set_resolution(&dev, VL53L5CX_RESOLUTION_8X8);
+                if (status != VL53L5CX_STATUS_OK) {
+                    printf("Failed to set resolution to 8x8, error code: %d\r\n", status);
+                    continue; // Try again
+                } else {
+                    printf("Resolution set to 8x8 successfully\r\n");
+                }
+
+
+                // Set ranging frequency to 15Hz (max for 8x8)
+                status = vl53l5cx_set_ranging_frequency_hz(&dev, 15);
+                if (status != VL53L5CX_STATUS_OK) {
+                    printf("Failed to set ranging frequency to 15Hz, error code: %d\r\n", status);
+                    continue; // Try again
+                } else {
+                    printf("Ranging frequency set to 15Hz successfully\r\n");
+                }
+
+                // Initialization successful
+                break;
+            } else {
+                printf("Sensor initialization error, error code: %d\r\n", status);
+            }
+        } else {
+            printf("Sensor not alive at default address, status: %d, is_alive: %d\r\n", status, is_alive);
+        }
+
+        // Delay before retrying
+        HAL_Delay(1000);
+    }
+}
+
+// Funkcja do skanowania magistrali I2C
+void Scan_I2C_Devices() {
+    printf("Skanowanie urządzeń I2C...\r\n");
+    HAL_StatusTypeDef result;
+    uint8_t i;
+    for (i = 1; i < 128; i++) {
+        result = HAL_I2C_IsDeviceReady(&hi2c3, (uint16_t)(i << 1), 1, 10);
+        if (result == HAL_OK) {
+            printf("Urządzenie znalezione pod adresem: 0x%02X\r\n", i);
+        }
+    }
+    printf("Skanowanie zakończone.\r\n");
+    HAL_Delay(100);
+}
+
+
+
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
+  * @brief  Ta funkcja jest wywoływana w przypadku wystąpienia błędu.
   * @retval None
   */
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+  // Obsługa błędów
   __disable_irq();
   while (1)
   {
   }
-  /* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
+  * @brief  Raportuje nazwę pliku źródłowego i numer linii, gdzie wystąpił błąd.
+  * @param  file: wskaźnik na nazwę pliku źródłowego
+  * @param  line: numer linii, gdzie wystąpił błąd
   * @retval None
   */
 void assert_failed(uint8_t *file, uint32_t line)
 {
-  /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
-  /* USER CODE END 6 */
+  // Obsługa asercji
 }
 #endif /* USE_FULL_ASSERT */

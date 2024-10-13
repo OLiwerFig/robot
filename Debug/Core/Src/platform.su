@@ -1,0 +1,7 @@
+../Core/Src/platform.c:10:9:VL53L5CX_RdByte	48	static
+../Core/Src/platform.c:20:9:VL53L5CX_WrByte	40	static
+../Core/Src/platform.c:30:9:VL53L5CX_WrMulti	48	static
+../Core/Src/platform.c:41:9:VL53L5CX_RdMulti	48	static
+../Core/Src/platform.c:52:9:VL53L5CX_Reset_Sensor	16	static
+../Core/Src/platform.c:64:6:VL53L5CX_SwapBuffer	24	static
+../Core/Src/platform.c:83:9:VL53L5CX_WaitMs	16	static
