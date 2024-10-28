@@ -423,7 +423,7 @@ int main(void)
       // Wysyłanie danych do aplikacji Qt
       //SendDataToQt(&odom, &target, pwm_L, pwm_R, speed_L, speed_R);
 
-      HAL_Delay(10000); // Odpowiedni delay, aby nie przeciążać magistrali I2C
+      HAL_Delay(3000); // Odpowiedni delay, aby nie przeciążać magistrali I2C
 
     /* USER CODE END WHILE */
 
@@ -483,20 +483,18 @@ void SystemClock_Config(void)
 
 // Funkcja do przetwarzania danych z czujnika
 void ProcessData(VL53L5CX_ResultsData *results) {
-    printf("Czujnik:\n\r");
-    for (int i = 0; i < 64; i += 8) { // Wyświetlanie 8 pomiarów na linię
-        printf("Dystans %d-%d: %d mm, %d mm, %d mm, %d mm, %d mm, %d mm, %d mm, %d mm\n\r",
-               i, i+7,
-               results->distance_mm[i],
-               results->distance_mm[i+1],
-               results->distance_mm[i+2],
-               results->distance_mm[i+3],
-               results->distance_mm[i+4],
-               results->distance_mm[i+5],
-               results->distance_mm[i+6],
-               results->distance_mm[i+7]);
+    char buffer[1024];
+
+    for (int i = 0; i < 64; i++) {
+        sprintf(buffer, "%d ", results->distance_mm[i]);
+        HAL_UART_Transmit(&huart2, (uint8_t *)buffer, strlen(buffer), HAL_MAX_DELAY);
     }
+
+    // Dodanie nowej linii, aby oznaczyć koniec macierzy
+    sprintf(buffer, "\n");
+    HAL_UART_Transmit(&huart2, (uint8_t *)buffer, strlen(buffer), HAL_MAX_DELAY);
 }
+
 
 // Funkcja do inicjalizacji czujnika
 void Initialize_Sensor(void) {

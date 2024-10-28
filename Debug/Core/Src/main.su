@@ -13,7 +13,7 @@
 ../Core/Src/main.c:278:7:PID_Compute	32	static
 ../Core/Src/main.c:307:5:main	24	static
 ../Core/Src/main.c:440:6:SystemClock_Config	96	static
-../Core/Src/main.c:485:6:ProcessData	80	static
-../Core/Src/main.c:502:6:Initialize_Sensor	16	static
-../Core/Src/main.c:558:6:Scan_I2C_Devices	16	static
-../Core/Src/main.c:580:6:Error_Handler	4	static,ignoring_inline_asm
+../Core/Src/main.c:485:6:ProcessData	1048	static
+../Core/Src/main.c:500:6:Initialize_Sensor	16	static
+../Core/Src/main.c:556:6:Scan_I2C_Devices	16	static
+../Core/Src/main.c:578:6:Error_Handler	4	static,ignoring_inline_asm
