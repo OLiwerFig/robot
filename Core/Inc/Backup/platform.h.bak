@@ -17,6 +17,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include "stm32l4xx_hal.h"
 
 /**
  * @brief Structure VL53L5CX_Platform needs to be filled by the customer,
@@ -26,14 +27,11 @@
  * layer.
  */
 
-typedef struct
-{
-	/* To be filled with customer's platform. At least an I2C address/descriptor
-	 * needs to be added */
-	/* Example for most standard platform : I2C address of sensor */
-    uint16_t  			address;
-
+typedef struct {
+    I2C_HandleTypeDef* i2c_handle; // Uchwyt do magistrali I2C
+    uint16_t address;               // Adres I2C urządzenia (8-bitowy)
 } VL53L5CX_Platform;
+
 
 /*
  * @brief The macro below is used to define the number of target per zone sent

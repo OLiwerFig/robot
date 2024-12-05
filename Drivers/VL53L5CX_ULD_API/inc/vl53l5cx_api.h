@@ -284,6 +284,8 @@ typedef struct
 	 uint8_t	        temp_buffer[VL53L5CX_TEMPORARY_BUFFER_SIZE];
 	/* Auto-stop flag for stopping the sensor */
 	uint8_t				is_auto_stop_enabled;
+    /* Handle for the I2C interface */
+
 } VL53L5CX_Configuration;
 
 

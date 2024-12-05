@@ -52,6 +52,15 @@ typedef struct {
     float x;
     float y;
 } Target_TypeDef;
+
+
+
+typedef struct {
+    I2C_HandleTypeDef *i2c_handle;
+    uint16_t address;
+    uint8_t found; // 0 - nie znaleziono, 1 - znaleziono
+} SensorInfo;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -70,6 +79,10 @@ typedef struct {
 #define WHEEL_RADIUS            0.035
 #define WHEEL_BASE              0.15
 
+
+#define MAX_SENSORS 3
+
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -81,18 +94,23 @@ typedef struct {
 
 /* USER CODE BEGIN PV */
 // Zmienne globalne
-VL53L5CX_Configuration dev;
-VL53L5CX_ResultsData results;
-uint16_t sensor_address = VL53L5CX_DEFAULT_I2C_ADDRESS; // Adres czujnika
+VL53L5CX_Configuration dev1, dev2, dev3;
+VL53L5CX_ResultsData results1, results2, results3;
+
+
+SensorInfo g_sensors[MAX_SENSORS];
+uint8_t g_num_sensors_found = 0;
+
+uint8_t uartBuffer[UART_BUFFER_SIZE];
+
+
+
+float speed_L_target, speed_R_target, pwm_R, pwm_L, dt;
 
 volatile uint32_t speed_L = 0;
 volatile uint32_t speed_R = 0;
 volatile uint32_t count = 0;
 volatile uint32_t count1 = 0;
-
-uint8_t uartBuffer[UART_BUFFER_SIZE];
-
-float speed_L_target, speed_R_target, pwm_R, pwm_L, dt;
 
 volatile int pid_iterations = 0;
 volatile float distance;
@@ -101,6 +119,9 @@ PID_TypeDef pid_L, pid_R;
 
 Odometry_TypeDef odom;
 Target_TypeDef target;
+
+
+
 
 /* USER CODE END PV */
 
@@ -111,7 +132,8 @@ void SystemClock_Config(void);
 void ProcessReceivedData(uint8_t* data, uint16_t length);
 void SetTarget(float x, float y);
 void Scan_I2C_Devices(void);
-void Initialize_Sensor(void);
+void init_sensors(void);
+void read_sensors(void);
 void ProcessData(VL53L5CX_ResultsData *results);
 void Update_Odometry(Odometry_TypeDef *odom, float speed_L, float speed_R, float dt);
 void PID_Init(PID_TypeDef *pid, float Kp, float Ki, float Kd, float setpoint);
@@ -120,7 +142,6 @@ void SetSpeed(PID_TypeDef *pid, float setpoint);
 void SetMotorDirection(int direction_L, int direction_R);
 void SendDataToQt(Odometry_TypeDef *odom, Target_TypeDef *target ,float pwm_L ,float pwm_R,  float speed_L, float speed_R);
 void Odometry_Init(Odometry_TypeDef *odom);
-void CalculateTargetSpeed(Odometry_TypeDef *odom, Target_TypeDef *target, float *speed_L_target, float *speed_R_target);
 
 /* USER CODE END PFP */
 
@@ -140,14 +161,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
         count = __HAL_TIM_GET_COUNTER(&htim2);
         count1 = __HAL_TIM_GET_COUNTER(&htim3);
 
-        htim2.Instance->CNT = 0;
-        htim3.Instance->CNT = 0;
+        __HAL_TIM_SET_COUNTER(&htim2, 0);
+        __HAL_TIM_SET_COUNTER(&htim3, 0);
 
-        // Obliczanie prędkości na podstawie enkoderów
-        speed_L = count;   // Dostosuj zgodnie z rozdzielczością enkodera
+        speed_L = count;
         speed_R = count1;
 
-        // Tutaj możesz dodać dodatkowe obliczenia prędkości
     }
 }
 
@@ -165,9 +184,11 @@ void ProcessReceivedData(uint8_t* data, uint16_t length)
 // Callback dla przerwania UART
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
+
     if (huart->Instance == USART2) {
-        ProcessReceivedData(uartBuffer, UART_BUFFER_SIZE);
-        HAL_UART_Receive_IT(&huart2, uartBuffer, UART_BUFFER_SIZE);
+        flag = (char)Rx_data;
+        // Ponownie włącz przerwanie na odbiór następnego znaku
+        HAL_UART_Receive_IT(&huart2, &Rx_data, 1);
     }
 }
 
@@ -301,7 +322,7 @@ float PID_Compute(PID_TypeDef *pid, float current_value, float dt) {
 /* USER CODE END 0 */
 
 /**
-  * @brief  Główna funkcja programu.
+  * @brief  The application entry point.
   * @retval int
   */
 int main(void)
@@ -316,33 +337,35 @@ int main(void)
 
   /* USER CODE END 1 */
 
-  /* Inicjalizacja MCU --------------------------------------------------------*/
+  /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset wszystkich peryferiów, inicjalizacja interfejsu Flash i Systicka. */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
   // Twoja inicjalizacja
   /* USER CODE END Init */
 
-  /* Konfiguracja zegara systemowego */
+  /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
   // Dodatkowa konfiguracja systemu, jeśli potrzebna
   /* USER CODE END SysInit */
 
-  /* Inicjalizacja wszystkich skonfigurowanych peryferiów */
+  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM6_Init();
-  MX_I2C3_Init(); // Upewnij się, że używasz odpowiedniego I2C
+  MX_I2C3_Init();
+  MX_I2C1_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
 
-  HAL_UART_Receive_IT(&huart2, uartBuffer, UART_BUFFER_SIZE);
+  HAL_UART_Receive_IT(&huart2, &Rx_data, 1);
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
@@ -358,17 +381,16 @@ int main(void)
   // Skanowanie urządzeń I2C
   Scan_I2C_Devices();
 
-  // Inicjalizacja czujnika
-  Initialize_Sensor();
+  // Inicjalizacja czujników
+  init_sensors();
 
-  // Start pomiarów z czujnika
-  printf("Rozpoczynanie pomiarów...\r\n");
-  int status = vl53l5cx_start_ranging(&dev);
-  if (status == VL53L5CX_STATUS_OK) {
-      printf("Pomiary rozpoczęte pomyślnie\r\n");
-  } else {
-      printf("Błąd rozpoczynania pomiarów, kod błędu: %d\r\n", status);
-  }
+  // Przypisanie uchwytów I2C do sensorHandles
+  // Jeśli nie jest to konieczne, można to pominąć
+  /*
+  sensorHandles[0].i2c_handle = &hi2c1;
+  sensorHandles[1].i2c_handle = &hi2c2;
+  sensorHandles[2].i2c_handle = &hi2c3;
+  */
 
   SetMotorDirection(0,0);
 
@@ -376,27 +398,48 @@ int main(void)
 
   /* USER CODE END 2 */
 
-  /* Nieskończona pętla */
+  /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-      // Odczyt danych z czujnika
-      uint8_t isReady = 0;
-      status = vl53l5cx_check_data_ready(&dev, &isReady);
-      if (status == VL53L5CX_STATUS_OK && isReady) {
-          status = vl53l5cx_get_ranging_data(&dev, &results);
-          if (status == VL53L5CX_STATUS_OK) {
-              ProcessData(&results);
-          } else {
-              printf("Błąd odczytu danych z czujnika, kod błędu: %d\r\n", status);
-          }
-      } else {
-          printf("Czujnik nie ma nowych danych do odczytu\r\n");
-      }
+	  while (1)
+	  {
+	      if (flag == 'B') {
+	          // Czujnik 1 (VL53L5CX_1)
+	          if (startVL1 == 0) {
+	              status = vl53l5cx_start_ranging(&Dev);
+	              startVL1 = 1;
+	          }
+	          get_result_VL53L5CX1();
+	          // Po jednorazowym wysłaniu danych możesz skasować flagę,
+	          // jeśli chcesz jednorazowo odpowiedzieć:
+	          flag = 0;
+	      } else if (flag == 'C') {
+	          // Czujnik 2 (VL53L5CX_2)
+	          if (startVL2 == 0) {
+	              status2 = vl53l5cx_start_ranging2(&Dev2);
+	              startVL2 = 1;
+	          }
+	          get_result_VL53L5CX2();
+	          flag = 0;
+	      } else if (flag == 'D') {
+	          // MLX90640
+	          get_result_MLX90640();
+	          flag = 0;
+	      } else if (flag == 'E') {
+	          // AMG8833
+	          get_result_AMG8833();
+	          flag = 0;
+	      }
+	      // Możesz dodać więcej opcji, np. 'A', 'F', 'G', itp.
 
-      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 200);
-      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 200);
+	      HAL_Delay(100); // Krótki delay, aby nie zapychać magistrali
+	  }
 
+
+      //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 200);
+      //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 200);
+      //printf("jaminkkkk \r\n");
 
       // Aktualizacja odometrii
       uint32_t current_time = HAL_GetTick();
@@ -423,7 +466,7 @@ int main(void)
       // Wysyłanie danych do aplikacji Qt
       //SendDataToQt(&odom, &target, pwm_L, pwm_R, speed_L, speed_R);
 
-      HAL_Delay(3000); // Odpowiedni delay, aby nie przeciążać magistrali I2C
+      HAL_Delay(10000); // Odpowiedni delay, aby nie przeciążać magistrali I2C
 
     /* USER CODE END WHILE */
 
@@ -434,22 +477,24 @@ int main(void)
 }
 
 /**
-  * @brief Konfiguracja zegara systemowego
+  * @brief System Clock Configuration
   * @retval None
   */
 void SystemClock_Config(void)
 {
-  // Konfiguracja zegara systemowego
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Konfiguracja głównego regulatora napięcia wewnętrznego */
+  /** Configure the main internal regulator output voltage
+  */
   if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /** Inicjalizacja oscylatorów RCC zgodnie ze specyfikowanymi parametrami */
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -465,7 +510,8 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Inicjalizacja zegarów CPU, AHB i APB */
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
@@ -481,118 +527,213 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+// Funkcja odczytu danych z czujników
+void read_sensors(void) {
+    uint8_t status;
+    uint8_t isReady = 0;
+
+    // Czujnik 1
+    status = vl53l5cx_check_data_ready(&dev1, &isReady);
+    printf("Czujnik 1 - status: %d, isReady: %d \r\n", status, isReady);
+    if (isReady) {
+        printf("Czujnik 1 jest gotowy, próbuję odczytać dane... \r\n");
+        status = vl53l5cx_get_ranging_data(&dev1, &results1);
+        if (status == VL53L5CX_STATUS_OK) {
+            printf("Czujnik 1 - Odczytano dane pomyślnie.\r\n");
+            ProcessData(&results1);
+            vl53l5cx_start_ranging(&dev1); // Ponowne uruchomienie pomiaru
+        } else {
+            printf("Błąd odczytu danych z czujnika 1, status: %d\r\n", status);
+        }
+    } else {
+        printf("Czujnik 1 nie ma gotowych danych.\r\n");
+    }
+
+    // Czujnik 2
+    status = vl53l5cx_check_data_ready(&dev2, &isReady);
+    printf("Czujnik 2 - status: %d, isReady: %d \r\n", status, isReady);
+    if (isReady) {
+        printf("Czujnik 2 jest gotowy, próbuję odczytać dane... \r\n");
+        status = vl53l5cx_get_ranging_data(&dev2, &results2);
+        if (status == VL53L5CX_STATUS_OK) {
+            printf("Czujnik 2 - Odczytano dane pomyślnie.\r\n");
+            ProcessData(&results2);
+            vl53l5cx_start_ranging(&dev2); // Ponowne uruchomienie pomiaru
+        } else {
+            printf("Błąd odczytu danych z czujnika 2, status: %d\r\n", status);
+        }
+    } else {
+        printf("Czujnik 2 nie ma gotowych danych.\r\n");
+    }
+
+    // Czujnik 3
+    status = vl53l5cx_check_data_ready(&dev3, &isReady);
+    printf("Czujnik 3 - status: %d, isReady: %d \r\n", status, isReady);
+    if (isReady) {
+        printf("Czujnik 3 jest gotowy, próbuję odczytać dane... \r\n");
+        status = vl53l5cx_get_ranging_data(&dev3, &results3);
+        if (status == VL53L5CX_STATUS_OK) {
+            printf("Czujnik 3 - Odczytano dane pomyślnie.\r\n");
+            ProcessData(&results3);
+            vl53l5cx_start_ranging(&dev3); // Ponowne uruchomienie pomiaru
+        } else {
+            printf("Błąd odczytu danych z czujnika 3, status: %d\r\n", status);
+        }
+    } else {
+        printf("Czujnik 3 nie ma gotowych danych.\r\n");
+    }
+}
+
 // Funkcja do przetwarzania danych z czujnika
 void ProcessData(VL53L5CX_ResultsData *results) {
-    char buffer[1024];
+    char buffer[256]; // Zmniejszony rozmiar bufora
+    int offset = 0;
 
     for (int i = 0; i < 64; i++) {
-        sprintf(buffer, "%d ", results->distance_mm[i]);
-        HAL_UART_Transmit(&huart2, (uint8_t *)buffer, strlen(buffer), HAL_MAX_DELAY);
+        offset += sprintf(buffer + offset, "%d ", results->distance_mm[i]);
+        // Jeśli bufor się zapełni, wyślij i zresetuj
+        if (offset > sizeof(buffer) - 20) { // Pozostaw miejsce na końcowy znak
+            HAL_UART_Transmit(&huart2, (uint8_t *)buffer, offset, HAL_MAX_DELAY);
+            offset = 0;
+        }
     }
 
     // Dodanie nowej linii, aby oznaczyć koniec macierzy
-    sprintf(buffer, "\n");
-    HAL_UART_Transmit(&huart2, (uint8_t *)buffer, strlen(buffer), HAL_MAX_DELAY);
+    offset += sprintf(buffer + offset, "\r \n");
+    HAL_UART_Transmit(&huart2, (uint8_t *)buffer, offset, HAL_MAX_DELAY);
 }
 
 
-// Funkcja do inicjalizacji czujnika
-void Initialize_Sensor(void) {
+void init_sensors(void) {
     uint8_t status;
-    uint8_t is_alive = 0;
 
-    for (int attempts = 0; attempts < 3; attempts++) {
-        printf("Initializing sensor, attempt %d...\r\n", attempts + 1);
+    if (g_num_sensors_found == 0) {
+        printf("Brak wykrytych czujników do inicjalizacji.\r\n");
+        return;
+    }
 
-        // Reset sensor
-        VL53L5CX_Reset_Sensor(&dev.platform);
+    for (int i = 0; i < g_num_sensors_found && i < 3; i++) {
+        if (g_sensors[i].found == 1) {
+            VL53L5CX_Configuration* current_dev;
 
-        dev.platform.address = VL53L5CX_DEFAULT_I2C_ADDRESS;
-
-        // Check if the sensor is alive at the default address
-        status = vl53l5cx_is_alive(&dev, &is_alive);
-        printf("Sensor status (default address): %d, is_alive: %d\r\n", status, is_alive);
-
-        if (status == VL53L5CX_STATUS_OK && is_alive) {
-            // Initialize sensor
-            status = vl53l5cx_init(&dev);
-            if (status == VL53L5CX_STATUS_OK) {
-                printf("Sensor initialized with address 0x%02X\r\n", sensor_address);
-
-                // Set resolution to 8x8
-                status = vl53l5cx_set_resolution(&dev, VL53L5CX_RESOLUTION_8X8);
-                if (status != VL53L5CX_STATUS_OK) {
-                    printf("Failed to set resolution to 8x8, error code: %d\r\n", status);
-                    continue; // Try again
-                } else {
-                    printf("Resolution set to 8x8 successfully\r\n");
-                }
-
-
-                // Set ranging frequency to 15Hz (max for 8x8)
-                status = vl53l5cx_set_ranging_frequency_hz(&dev, 15);
-                if (status != VL53L5CX_STATUS_OK) {
-                    printf("Failed to set ranging frequency to 15Hz, error code: %d\r\n", status);
-                    continue; // Try again
-                } else {
-                    printf("Ranging frequency set to 15Hz successfully\r\n");
-                }
-
-                // Initialization successful
-                break;
+            // Przydział devX w zależności od indexu
+            if (i == 0) {
+                current_dev = &dev1;
+            } else if (i == 1) {
+                current_dev = &dev2;
             } else {
-                printf("Sensor initialization error, error code: %d\r\n", status);
+                current_dev = &dev3;
             }
-        } else {
-            printf("Sensor not alive at default address, status: %d, is_alive: %d\r\n", status, is_alive);
-        }
 
-        // Delay before retrying
-        HAL_Delay(1000);
+            // Ustaw platformę
+            current_dev->platform.i2c_handle = g_sensors[i].i2c_handle;
+            current_dev->platform.address = g_sensors[i].address;
+
+            // Dodatkowa weryfikacja przed inicjalizacją:
+            if (HAL_I2C_IsDeviceReady(current_dev->platform.i2c_handle, current_dev->platform.address, 1, 100) != HAL_OK) {
+                printf("Czujnik %d: urządzenie na adresie 0x%X nie odpowiada przed init.\r\n", i+1, current_dev->platform.address);
+                g_sensors[i].found = 0; // Oznacz jako niewykryty, skoro nie odpowiada
+                continue;
+            }
+
+            printf("Inicjalizacja czujnika %d na magistrali %p, adres 0x%X...\r\n", i+1, (void*)current_dev->platform.i2c_handle, current_dev->platform.address);
+
+            // Inicjalizuj czujnik
+            status = vl53l5cx_init(current_dev);
+            printf("Inicjalizacja czujnika %d, status: %d\r\n", i+1, status);
+
+            if (status == VL53L5CX_STATUS_OK) {
+                printf("Czujnik %d zainicjalizowany poprawnie.\r\n", i+1);
+                vl53l5cx_set_resolution(current_dev, VL53L5CX_RESOLUTION_8X8);
+                vl53l5cx_set_ranging_frequency_hz(current_dev, 15);
+                vl53l5cx_set_ranging_mode(current_dev, VL53L5CX_RANGING_MODE_CONTINUOUS);
+                vl53l5cx_start_ranging(current_dev);
+            } else {
+                printf("Błąd inicjalizacji czujnika %d, kod błędu: %d\r\n", i+1, status);
+                g_sensors[i].found = 0; // Nie udało się zainicjalizować, oznacz jako niewykryty
+            }
+        }
     }
 }
+
+
+
+
 
 // Funkcja do skanowania magistrali I2C
 void Scan_I2C_Devices() {
-    printf("Skanowanie urządzeń I2C...\r\n");
-    HAL_StatusTypeDef result;
-    uint8_t i;
-    for (i = 1; i < 128; i++) {
-        result = HAL_I2C_IsDeviceReady(&hi2c3, (uint16_t)(i << 1), 1, 10);
-        if (result == HAL_OK) {
-            printf("Urządzenie znalezione pod adresem: 0x%02X\r\n", i);
+    printf("Rozpoczynanie skanowania urządzeń I2C...\r\n");
+
+    I2C_HandleTypeDef* i2c_handles[] = {&hi2c1, &hi2c2, &hi2c3};
+    const char* i2c_names[] = {"I2C1", "I2C2", "I2C3"};
+
+    g_num_sensors_found = 0;
+    for (int i = 0; i < MAX_SENSORS; i++) {
+        g_sensors[i].found = 0;
+    }
+
+    for (int i = 0; i < 3; i++) {
+        printf("Skanowanie magistrali %s...\r\n", i2c_names[i]);
+
+        for (uint8_t addr = 1; addr < 128; addr++) {
+            HAL_StatusTypeDef result = HAL_I2C_IsDeviceReady(i2c_handles[i], (uint16_t)(addr << 1), 1, 10);
+            if (result == HAL_OK) {
+                printf("Urządzenie znalezione na magistrali %s pod adresem: 0x%02X\r\n", i2c_names[i], addr);
+
+                // Sprawdź, czy to adres czujnika VL53L5CX
+                // Domyślny adres: 0x29 (7-bit) -> (0x29 << 1) = 0x52 (8-bit)
+                if (addr == 0x29 && g_num_sensors_found < MAX_SENSORS) {
+                    g_sensors[g_num_sensors_found].i2c_handle = i2c_handles[i];
+                    g_sensors[g_num_sensors_found].address = (uint16_t)(0x52); // 8-bitowy adres
+                    g_sensors[g_num_sensors_found].found = 1;
+                    g_num_sensors_found++;
+                }
+
+                HAL_Delay(100); // mały delay
+            }
         }
     }
-    printf("Skanowanie zakończone.\r\n");
-    HAL_Delay(100);
-}
 
+    printf("Skanowanie zakończone na wszystkich magistralach.\r\n");
+
+    // Debug: Wyświetl które czujniki znaleziono
+    for (int i = 0; i < g_num_sensors_found; i++) {
+        printf("Czujnik %d znaleziony na magistrali z handle: %p, adres: 0x%02X\r\n",
+               i+1, (void*)g_sensors[i].i2c_handle, g_sensors[i].address);
+    }
+}
 
 
 /* USER CODE END 4 */
 
 /**
-  * @brief  Ta funkcja jest wywoływana w przypadku wystąpienia błędu.
+  * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
 void Error_Handler(void)
 {
-  // Obsługa błędów
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
   }
+  /* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT
 /**
-  * @brief  Raportuje nazwę pliku źródłowego i numer linii, gdzie wystąpił błąd.
-  * @param  file: wskaźnik na nazwę pliku źródłowego
-  * @param  line: numer linii, gdzie wystąpił błąd
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
   * @retval None
   */
 void assert_failed(uint8_t *file, uint32_t line)
 {
-  // Obsługa asercji
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
