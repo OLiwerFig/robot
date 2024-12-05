@@ -82,6 +82,9 @@ typedef struct {
 
 #define MAX_SENSORS 3
 
+extern char flag; // flaga ustawiana przez UART callback np. w HAL_UART_RxCpltCallback
+extern UART_HandleTypeDef huart2;
+
 
 /* USER CODE END PD */
 
@@ -100,6 +103,9 @@ VL53L5CX_ResultsData results1, results2, results3;
 
 SensorInfo g_sensors[MAX_SENSORS];
 uint8_t g_num_sensors_found = 0;
+
+uint8_t Rx_data;
+char flag;
 
 uint8_t uartBuffer[UART_BUFFER_SIZE];
 
@@ -184,11 +190,9 @@ void ProcessReceivedData(uint8_t* data, uint16_t length)
 // Callback dla przerwania UART
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-
     if (huart->Instance == USART2) {
-        flag = (char)Rx_data;
-        // Ponownie włącz przerwanie na odbiór następnego znaku
-        HAL_UART_Receive_IT(&huart2, &Rx_data, 1);
+        flag = (char)Rx_data; // Odbierz flagę
+        HAL_UART_Receive_IT(&huart2, &Rx_data, 1); // Ponownie włącz przerwanie
     }
 }
 
@@ -402,11 +406,12 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
       read_sensors();
 
       //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 200);
       //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 200);
-      printf("jaminkkkk \r\n");
+      //printf("jaminkkkk \r\n");
 
       // Aktualizacja odometrii
       uint32_t current_time = HAL_GetTick();
@@ -433,7 +438,7 @@ int main(void)
       // Wysyłanie danych do aplikacji Qt
       //SendDataToQt(&odom, &target, pwm_L, pwm_R, speed_L, speed_R);
 
-      HAL_Delay(10000); // Odpowiedni delay, aby nie przeciążać magistrali I2C
+      HAL_Delay(3000); // Odpowiedni delay, aby nie przeciążać magistrali I2C
 
     /* USER CODE END WHILE */
 
@@ -497,59 +502,75 @@ void SystemClock_Config(void)
 // Funkcja odczytu danych z czujników
 void read_sensors(void) {
     uint8_t status;
-    uint8_t isReady = 0;
+    uint8_t isReady;
+    char buffer[512];
+    int offset;
 
-    // Czujnik 1
+    // Odczyt z czujnika 1 (oznaczenie "A")
+    isReady = 0;
     status = vl53l5cx_check_data_ready(&dev1, &isReady);
-    printf("Czujnik 1 - status: %d, isReady: %d \r\n", status, isReady);
     if (isReady) {
-        printf("Czujnik 1 jest gotowy, próbuję odczytać dane... \r\n");
         status = vl53l5cx_get_ranging_data(&dev1, &results1);
         if (status == VL53L5CX_STATUS_OK) {
-            printf("Czujnik 1 - Odczytano dane pomyślnie.\r\n");
-            ProcessData(&results1);
-            vl53l5cx_start_ranging(&dev1); // Ponowne uruchomienie pomiaru
-        } else {
-            printf("Błąd odczytu danych z czujnika 1, status: %d\r\n", status);
+            // Wysyłamy literę 'A' i nową linię
+            HAL_UART_Transmit(&huart2, (uint8_t *)"A\n", 2, HAL_MAX_DELAY);
+
+            offset = 0;
+            for (int i = 0; i < 64; i++) {
+                offset += sprintf(buffer + offset, "%d ", results1.distance_mm[i]);
+            }
+            offset += sprintf(buffer + offset, "\r\n");
+            HAL_UART_Transmit(&huart2, (uint8_t *)buffer, offset, HAL_MAX_DELAY);
+
+            // Ponowne uruchomienie pomiaru
+            vl53l5cx_start_ranging(&dev1);
         }
-    } else {
-        printf("Czujnik 1 nie ma gotowych danych.\r\n");
     }
 
-    // Czujnik 2
+    // Odczyt z czujnika 2 (oznaczenie "B")
+    isReady = 0;
     status = vl53l5cx_check_data_ready(&dev2, &isReady);
-    printf("Czujnik 2 - status: %d, isReady: %d \r\n", status, isReady);
     if (isReady) {
-        printf("Czujnik 2 jest gotowy, próbuję odczytać dane... \r\n");
         status = vl53l5cx_get_ranging_data(&dev2, &results2);
         if (status == VL53L5CX_STATUS_OK) {
-            printf("Czujnik 2 - Odczytano dane pomyślnie.\r\n");
-            ProcessData(&results2);
-            vl53l5cx_start_ranging(&dev2); // Ponowne uruchomienie pomiaru
-        } else {
-            printf("Błąd odczytu danych z czujnika 2, status: %d\r\n", status);
+            // Wysyłamy literę 'B' i nową linię
+            HAL_UART_Transmit(&huart2, (uint8_t *)"B\n", 2, HAL_MAX_DELAY);
+
+            offset = 0;
+            for (int i = 0; i < 64; i++) {
+                offset += sprintf(buffer + offset, "%d ", results2.distance_mm[i]);
+            }
+            offset += sprintf(buffer + offset, "\r\n");
+            HAL_UART_Transmit(&huart2, (uint8_t *)buffer, offset, HAL_MAX_DELAY);
+
+            // Ponowne uruchomienie pomiaru
+            vl53l5cx_start_ranging(&dev2);
         }
-    } else {
-        printf("Czujnik 2 nie ma gotowych danych.\r\n");
     }
 
-    // Czujnik 3
+    // Odczyt z czujnika 3 (oznaczenie "C")
+    isReady = 0;
     status = vl53l5cx_check_data_ready(&dev3, &isReady);
-    printf("Czujnik 3 - status: %d, isReady: %d \r\n", status, isReady);
     if (isReady) {
-        printf("Czujnik 3 jest gotowy, próbuję odczytać dane... \r\n");
         status = vl53l5cx_get_ranging_data(&dev3, &results3);
         if (status == VL53L5CX_STATUS_OK) {
-            printf("Czujnik 3 - Odczytano dane pomyślnie.\r\n");
-            ProcessData(&results3);
-            vl53l5cx_start_ranging(&dev3); // Ponowne uruchomienie pomiaru
-        } else {
-            printf("Błąd odczytu danych z czujnika 3, status: %d\r\n", status);
+            // Wysyłamy literę 'C' i nową linię
+            HAL_UART_Transmit(&huart2, (uint8_t *)"C\n", 2, HAL_MAX_DELAY);
+
+            offset = 0;
+            for (int i = 0; i < 64; i++) {
+                offset += sprintf(buffer + offset, "%d ", results3.distance_mm[i]);
+            }
+            offset += sprintf(buffer + offset, "\r\n");
+            HAL_UART_Transmit(&huart2, (uint8_t *)buffer, offset, HAL_MAX_DELAY);
+
+            // Ponowne uruchomienie pomiaru
+            vl53l5cx_start_ranging(&dev3);
         }
-    } else {
-        printf("Czujnik 3 nie ma gotowych danych.\r\n");
     }
 }
+
+
 
 // Funkcja do przetwarzania danych z czujnika
 void ProcessData(VL53L5CX_ResultsData *results) {
