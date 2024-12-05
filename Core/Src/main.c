@@ -402,44 +402,11 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  while (1)
-	  {
-	      if (flag == 'B') {
-	          // Czujnik 1 (VL53L5CX_1)
-	          if (startVL1 == 0) {
-	              status = vl53l5cx_start_ranging(&Dev);
-	              startVL1 = 1;
-	          }
-	          get_result_VL53L5CX1();
-	          // Po jednorazowym wysłaniu danych możesz skasować flagę,
-	          // jeśli chcesz jednorazowo odpowiedzieć:
-	          flag = 0;
-	      } else if (flag == 'C') {
-	          // Czujnik 2 (VL53L5CX_2)
-	          if (startVL2 == 0) {
-	              status2 = vl53l5cx_start_ranging2(&Dev2);
-	              startVL2 = 1;
-	          }
-	          get_result_VL53L5CX2();
-	          flag = 0;
-	      } else if (flag == 'D') {
-	          // MLX90640
-	          get_result_MLX90640();
-	          flag = 0;
-	      } else if (flag == 'E') {
-	          // AMG8833
-	          get_result_AMG8833();
-	          flag = 0;
-	      }
-	      // Możesz dodać więcej opcji, np. 'A', 'F', 'G', itp.
-
-	      HAL_Delay(100); // Krótki delay, aby nie zapychać magistrali
-	  }
-
+      read_sensors();
 
       //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 200);
       //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 200);
-      //printf("jaminkkkk \r\n");
+      printf("jaminkkkk \r\n");
 
       // Aktualizacja odometrii
       uint32_t current_time = HAL_GetTick();
