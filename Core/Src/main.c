@@ -19,71 +19,36 @@
 #include "usart.h"
 #include "gpio.h"
 
+
+
+
+#include "motors.h"
+#include "sensors.h"
+#include "odometry.h"
+#include "pid.h"
+#include "communication.h"
+#include <string.h>
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <string.h>
-#include <stdio.h>
-#include <math.h>
-#include <stdlib.h>
-#include "vl53l5cx_api.h"
-#include "platform.h"
+
+#define LED_GPIO_PORT GPIOA
+#define LED_PIN GPIO_PIN_5
+
+
+volatile uint8_t isProcessing = 0;
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef struct {
-    float Kp;
-    float Ki;
-    float Kd;
-    float setpoint;
-    float prev_error;
-    float integral;
-    float output;
-    uint32_t prev_time;
-} PID_TypeDef;
-
-typedef struct {
-    float x;
-    float y;
-    float theta;
-} Odometry_TypeDef;
-
-typedef struct {
-    float x;
-    float y;
-} Target_TypeDef;
-
-
-
-typedef struct {
-    I2C_HandleTypeDef *i2c_handle;
-    uint16_t address;
-    uint8_t found; // 0 - nie znaleziono, 1 - znaleziono
-} SensorInfo;
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define UART_BUFFER_SIZE              64
-#define TIMER_CONF_BOTH_EDGE_T1T2     4
-#define TIMER_FREQUENCY               10
-#define SECOND_IN_MINUTE              60
-
-#define ENCODER_1_RESOLUTION    14
-#define ENCODER_2_RESOLUTION    14
-
-#define MOTOR_1_GEAR            48
-#define MOTOR_2_GEAR            48
-
-#define WHEEL_RADIUS            0.035
-#define WHEEL_BASE              0.15
 
 
-#define MAX_SENSORS 3
-
-extern char flag; // flaga ustawiana przez UART callback np. w HAL_UART_RxCpltCallback
-extern UART_HandleTypeDef huart2;
 
 
 /* USER CODE END PD */
@@ -96,38 +61,6 @@ extern UART_HandleTypeDef huart2;
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-// Zmienne globalne
-VL53L5CX_Configuration dev1, dev2, dev3;
-VL53L5CX_ResultsData results1, results2, results3;
-
-
-SensorInfo g_sensors[MAX_SENSORS];
-uint8_t g_num_sensors_found = 0;
-
-uint8_t Rx_data;
-char flag;
-
-uint8_t uartBuffer[UART_BUFFER_SIZE];
-
-
-
-float speed_L_target, speed_R_target, pwm_R, pwm_L, dt;
-
-volatile uint32_t speed_L = 0;
-volatile uint32_t speed_R = 0;
-volatile uint32_t count = 0;
-volatile uint32_t count1 = 0;
-
-volatile int pid_iterations = 0;
-volatile float distance;
-
-PID_TypeDef pid_L, pid_R;
-
-Odometry_TypeDef odom;
-Target_TypeDef target;
-
-
-
 
 /* USER CODE END PV */
 
@@ -135,19 +68,6 @@ Target_TypeDef target;
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 // Deklaracje funkcji
-void ProcessReceivedData(uint8_t* data, uint16_t length);
-void SetTarget(float x, float y);
-void Scan_I2C_Devices(void);
-void init_sensors(void);
-void read_sensors(void);
-void ProcessData(VL53L5CX_ResultsData *results);
-void Update_Odometry(Odometry_TypeDef *odom, float speed_L, float speed_R, float dt);
-void PID_Init(PID_TypeDef *pid, float Kp, float Ki, float Kd, float setpoint);
-float PID_Compute(PID_TypeDef *pid, float current_value, float dt);
-void SetSpeed(PID_TypeDef *pid, float setpoint);
-void SetMotorDirection(int direction_L, int direction_R);
-void SendDataToQt(Odometry_TypeDef *odom, Target_TypeDef *target ,float pwm_L ,float pwm_R,  float speed_L, float speed_R);
-void Odometry_Init(Odometry_TypeDef *odom);
 
 /* USER CODE END PFP */
 
@@ -155,6 +75,14 @@ void Odometry_Init(Odometry_TypeDef *odom);
 /* USER CODE BEGIN 0 */
 
 // Funkcja do obsługi printf przez UART
+
+void toggleLED(void) {
+    HAL_GPIO_TogglePin(LED_GPIO_PORT, LED_PIN);
+    HAL_Delay(100);  // Krótkie mignięcie
+    HAL_GPIO_TogglePin(LED_GPIO_PORT, LED_PIN);
+}
+
+
 int _write(int file, char* ptr, int len){
     HAL_UART_Transmit(&huart2, (uint8_t *)ptr, len, HAL_MAX_DELAY);
     return len;
@@ -177,151 +105,31 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 }
 
 // Funkcja do przetwarzania danych odebranych przez UART
-void ProcessReceivedData(uint8_t* data, uint16_t length)
-{
-    if (length >= sizeof(float) * 2) {
-        float targetX, targetY;
-        memcpy(&targetX, data, sizeof(float));
-        memcpy(&targetY, data + sizeof(float), sizeof(float));
-        SetTarget(targetX, targetY);
-    }
-}
+
 
 // Callback dla przerwania UART
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART2) {
-        flag = (char)Rx_data; // Odbierz flagę
-        HAL_UART_Receive_IT(&huart2, &Rx_data, 1); // Ponownie włącz przerwanie
+        // Potwierdzenie odebrania danych przez LED
+        HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+
+        // Przetwarzanie komendy
+        ProcessCommand(Rx_data);
+
+        // Reset LED po przetworzeniu
+        HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+
+        // Ponowne włączenie przerwania
+        HAL_UART_Receive_IT(&huart2, (uint8_t*)&Rx_data, 1);
     }
 }
 
 // Inicjalizacja regulatora PID
-void PID_Init(PID_TypeDef *pid, float Kp, float Ki, float Kd, float setpoint) {
-    pid->Kp = Kp;
-    pid->Ki = Ki;
-    pid->Kd = Kd;
-    pid->setpoint = setpoint;
-    pid->prev_error = 0;
-    pid->integral = 0;
-    pid->output = 0;
-    pid->prev_time = HAL_GetTick();
-}
+
 
 // Ustawienie nowego setpointu dla regulatora PID
-void SetSpeed(PID_TypeDef *pid, float setpoint) {
-    pid->setpoint = setpoint;
-}
 
-// Inicjalizacja odometrii
-void Odometry_Init(Odometry_TypeDef *odom) {
-    odom->x = 0.0f;
-    odom->y = 0.0f;
-    odom->theta = 0.0f;
-}
-
-// Aktualizacja odometrii
-void Update_Odometry(Odometry_TypeDef *odom, float speed_L, float speed_R, float dt) {
-    float v_L = speed_L * (2 * M_PI * WHEEL_RADIUS) / (ENCODER_1_RESOLUTION * MOTOR_1_GEAR);
-    float v_R = speed_R * (2 * M_PI * WHEEL_RADIUS) / (ENCODER_2_RESOLUTION * MOTOR_2_GEAR);
-
-    float v = (v_L + v_R) / 2.0;
-    float omega = (v_R - v_L) / WHEEL_BASE;
-
-    // Aktualizuj pozycje
-    odom->theta += omega * dt;
-    odom->x += v * cos(odom->theta) * dt;
-    odom->y += v * sin(odom->theta) * dt;
-}
-
-// Ustawienie nowego celu
-void SetTarget(float x, float y) {
-    target.x = x;
-    target.y = y;
-}
-
-// Obliczanie prędkości docelowych dla silników
-void CalculateTargetSpeed(Odometry_TypeDef *odom, Target_TypeDef *target, float *speed_L_target, float *speed_R_target) {
-    float dx = target->x - odom->x;
-    float dy = target->y - odom->y;
-    distance = sqrt(dx * dx + dy * dy);
-    float angle_to_target = atan2(dy, dx);
-
-    float angle_error = angle_to_target - odom->theta;
-    if (angle_error > M_PI) angle_error -= 2 * M_PI;
-    if (angle_error < -M_PI) angle_error += 2 * M_PI;
-
-    // Parametry do dostosowania
-    float max_linear_speed = 120.0f;
-    float max_angular_speed = 1000.0f;
-    float linear_speed_kp = 60.0f;
-    float angular_speed_kp = 10.0f;
-
-    float linear_speed = linear_speed_kp * distance;
-    if (linear_speed > max_linear_speed) {
-        linear_speed = max_linear_speed;
-    }
-
-    float angular_speed = angular_speed_kp * angle_error;
-    if (angular_speed > max_angular_speed) {
-        angular_speed = max_angular_speed;
-    } else if (angular_speed < -max_angular_speed) {
-        angular_speed = -max_angular_speed;
-    }
-
-    *speed_L_target = linear_speed - (WHEEL_BASE / 2) * angular_speed;
-    *speed_R_target = linear_speed + (WHEEL_BASE / 2) * angular_speed;
-}
-
-// Ustawienie kierunku obrotu silników
-void SetMotorDirection(int direction_L, int direction_R) {
-    if (direction_L == 1) {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);
-    } else {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);
-    }
-
-    if (direction_R == 1) {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
-    } else {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
-    }
-}
-
-// Wysyłanie danych do aplikacji Qt
-void SendDataToQt(Odometry_TypeDef *odom, Target_TypeDef *target ,float pwm_L ,float pwm_R,  float speed_L, float speed_R) {
-    char buffer[100];
-    sprintf(buffer, "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f\n", speed_L, speed_R, pwm_L, pwm_R, odom->x, odom->y, odom->theta, target->x, target->y);
-    HAL_UART_Transmit(&huart2, (uint8_t *)buffer, strlen(buffer), HAL_MAX_DELAY);
-}
-
-// Obliczanie wyjścia regulatora PID
-float PID_Compute(PID_TypeDef *pid, float current_value, float dt) {
-    float error = pid->setpoint - current_value;
-
-    pid->integral += error * dt;
-
-    float derivative = (error - pid->prev_error) / dt;
-
-    pid->output = (pid->Kp * error) + (pid->Ki * pid->integral) + (pid->Kd * derivative);
-    pid->prev_error = error;
-
-    if (pid_iterations < 4) {
-        if (pid->output > 30) pid->output  = 30;
-        if (pid->output < 0) pid->output  = 0;
-    } else {
-        if (pid->output > 1000) pid->output  = 1000;
-        if (pid->output < 0) pid->output  = 0;
-    }
-
-    pid_iterations++;
-
-    return pid->output;
-}
 
 /* USER CODE END 0 */
 
@@ -337,7 +145,7 @@ int main(void)
   Odometry_Init(&odom);
   PID_Init(&pid_L, 6, 1.5, 0.1, 1);
   PID_Init(&pid_R, 6, 1.5, 0.3, 1);
-  SetTarget(0.5f, 0);
+  SetTarget(&target, 0.5f, 0);
 
   /* USER CODE END 1 */
 
@@ -345,6 +153,13 @@ int main(void)
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
+
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+   GPIO_InitStruct.Pin = LED_PIN;
+   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+   GPIO_InitStruct.Pull = GPIO_NOPULL;
+   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+   HAL_GPIO_Init(LED_GPIO_PORT, &GPIO_InitStruct);
 
   /* USER CODE BEGIN Init */
   // Twoja inicjalizacja
@@ -369,7 +184,8 @@ int main(void)
   MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
 
-  HAL_UART_Receive_IT(&huart2, &Rx_data, 1);
+  uint8_t* rx_ptr = (uint8_t*)&Rx_data;
+  HAL_UART_Receive_IT(&huart2, rx_ptr, 1);
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
@@ -377,8 +193,10 @@ int main(void)
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
 
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 200);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 200);
+  HAL_UART_Receive_IT(&huart2, (uint8_t*)&Rx_data, 1);
+
+ // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 200);
+ // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 200);
 
   HAL_TIM_Base_Start_IT(&htim6);
 
@@ -396,7 +214,13 @@ int main(void)
   sensorHandles[2].i2c_handle = &hi2c3;
   */
 
-  SetMotorDirection(0,0);
+  InitCommunication();
+
+  // Informacja o starcie systemu
+  HAL_UART_Transmit(&huart2, (uint8_t*)"System Ready\r\n", 13, 100);
+
+
+  //SetMotorDirection(0,0);
 
   uint32_t prev_time = HAL_GetTick();
 
@@ -409,8 +233,8 @@ int main(void)
 
       read_sensors();
 
-      //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 200);
-      //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 200);
+ //     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 200);
+ //     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 200);
       //printf("jaminkkkk \r\n");
 
       // Aktualizacja odometrii
@@ -418,7 +242,7 @@ int main(void)
       dt = (current_time - prev_time) / 1000.0f; // Konwersja ms na s
       prev_time = current_time;
 
-      // Update_Odometry(&odom, speed_L, speed_R, dt);
+ //     Update_Odometry(&odom, speed_L, speed_R, dt);
 
       // Obliczanie prędkości docelowych
       //CalculateTargetSpeed(&odom, &target, &speed_L_target, &speed_R_target);
@@ -438,7 +262,7 @@ int main(void)
       // Wysyłanie danych do aplikacji Qt
       //SendDataToQt(&odom, &target, pwm_L, pwm_R, speed_L, speed_R);
 
-      HAL_Delay(3000); // Odpowiedni delay, aby nie przeciążać magistrali I2C
+      HAL_Delay(1000); // Odpowiedni delay, aby nie przeciążać magistrali I2C
 
     /* USER CODE END WHILE */
 
@@ -498,199 +322,6 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
-// Funkcja odczytu danych z czujników
-void read_sensors(void) {
-    uint8_t status;
-    uint8_t isReady;
-    char buffer[512];
-    int offset;
-
-    // Odczyt z czujnika 1 (oznaczenie "A")
-    isReady = 0;
-    status = vl53l5cx_check_data_ready(&dev1, &isReady);
-    if (isReady) {
-        status = vl53l5cx_get_ranging_data(&dev1, &results1);
-        if (status == VL53L5CX_STATUS_OK) {
-            // Wysyłamy literę 'A' i nową linię
-            HAL_UART_Transmit(&huart2, (uint8_t *)"A\n", 2, HAL_MAX_DELAY);
-
-            offset = 0;
-            for (int i = 0; i < 64; i++) {
-                offset += sprintf(buffer + offset, "%d ", results1.distance_mm[i]);
-            }
-            offset += sprintf(buffer + offset, "\r\n");
-            HAL_UART_Transmit(&huart2, (uint8_t *)buffer, offset, HAL_MAX_DELAY);
-
-            // Ponowne uruchomienie pomiaru
-            vl53l5cx_start_ranging(&dev1);
-        }
-    }
-
-    // Odczyt z czujnika 2 (oznaczenie "B")
-    isReady = 0;
-    status = vl53l5cx_check_data_ready(&dev2, &isReady);
-    if (isReady) {
-        status = vl53l5cx_get_ranging_data(&dev2, &results2);
-        if (status == VL53L5CX_STATUS_OK) {
-            // Wysyłamy literę 'B' i nową linię
-            HAL_UART_Transmit(&huart2, (uint8_t *)"B\n", 2, HAL_MAX_DELAY);
-
-            offset = 0;
-            for (int i = 0; i < 64; i++) {
-                offset += sprintf(buffer + offset, "%d ", results2.distance_mm[i]);
-            }
-            offset += sprintf(buffer + offset, "\r\n");
-            HAL_UART_Transmit(&huart2, (uint8_t *)buffer, offset, HAL_MAX_DELAY);
-
-            // Ponowne uruchomienie pomiaru
-            vl53l5cx_start_ranging(&dev2);
-        }
-    }
-
-    // Odczyt z czujnika 3 (oznaczenie "C")
-    isReady = 0;
-    status = vl53l5cx_check_data_ready(&dev3, &isReady);
-    if (isReady) {
-        status = vl53l5cx_get_ranging_data(&dev3, &results3);
-        if (status == VL53L5CX_STATUS_OK) {
-            // Wysyłamy literę 'C' i nową linię
-            HAL_UART_Transmit(&huart2, (uint8_t *)"C\n", 2, HAL_MAX_DELAY);
-
-            offset = 0;
-            for (int i = 0; i < 64; i++) {
-                offset += sprintf(buffer + offset, "%d ", results3.distance_mm[i]);
-            }
-            offset += sprintf(buffer + offset, "\r\n");
-            HAL_UART_Transmit(&huart2, (uint8_t *)buffer, offset, HAL_MAX_DELAY);
-
-            // Ponowne uruchomienie pomiaru
-            vl53l5cx_start_ranging(&dev3);
-        }
-    }
-}
-
-
-
-// Funkcja do przetwarzania danych z czujnika
-void ProcessData(VL53L5CX_ResultsData *results) {
-    char buffer[256]; // Zmniejszony rozmiar bufora
-    int offset = 0;
-
-    for (int i = 0; i < 64; i++) {
-        offset += sprintf(buffer + offset, "%d ", results->distance_mm[i]);
-        // Jeśli bufor się zapełni, wyślij i zresetuj
-        if (offset > sizeof(buffer) - 20) { // Pozostaw miejsce na końcowy znak
-            HAL_UART_Transmit(&huart2, (uint8_t *)buffer, offset, HAL_MAX_DELAY);
-            offset = 0;
-        }
-    }
-
-    // Dodanie nowej linii, aby oznaczyć koniec macierzy
-    offset += sprintf(buffer + offset, "\r \n");
-    HAL_UART_Transmit(&huart2, (uint8_t *)buffer, offset, HAL_MAX_DELAY);
-}
-
-
-void init_sensors(void) {
-    uint8_t status;
-
-    if (g_num_sensors_found == 0) {
-        printf("Brak wykrytych czujników do inicjalizacji.\r\n");
-        return;
-    }
-
-    for (int i = 0; i < g_num_sensors_found && i < 3; i++) {
-        if (g_sensors[i].found == 1) {
-            VL53L5CX_Configuration* current_dev;
-
-            // Przydział devX w zależności od indexu
-            if (i == 0) {
-                current_dev = &dev1;
-            } else if (i == 1) {
-                current_dev = &dev2;
-            } else {
-                current_dev = &dev3;
-            }
-
-            // Ustaw platformę
-            current_dev->platform.i2c_handle = g_sensors[i].i2c_handle;
-            current_dev->platform.address = g_sensors[i].address;
-
-            // Dodatkowa weryfikacja przed inicjalizacją:
-            if (HAL_I2C_IsDeviceReady(current_dev->platform.i2c_handle, current_dev->platform.address, 1, 100) != HAL_OK) {
-                printf("Czujnik %d: urządzenie na adresie 0x%X nie odpowiada przed init.\r\n", i+1, current_dev->platform.address);
-                g_sensors[i].found = 0; // Oznacz jako niewykryty, skoro nie odpowiada
-                continue;
-            }
-
-            printf("Inicjalizacja czujnika %d na magistrali %p, adres 0x%X...\r\n", i+1, (void*)current_dev->platform.i2c_handle, current_dev->platform.address);
-
-            // Inicjalizuj czujnik
-            status = vl53l5cx_init(current_dev);
-            printf("Inicjalizacja czujnika %d, status: %d\r\n", i+1, status);
-
-            if (status == VL53L5CX_STATUS_OK) {
-                printf("Czujnik %d zainicjalizowany poprawnie.\r\n", i+1);
-                vl53l5cx_set_resolution(current_dev, VL53L5CX_RESOLUTION_8X8);
-                vl53l5cx_set_ranging_frequency_hz(current_dev, 15);
-                vl53l5cx_set_ranging_mode(current_dev, VL53L5CX_RANGING_MODE_CONTINUOUS);
-                vl53l5cx_start_ranging(current_dev);
-            } else {
-                printf("Błąd inicjalizacji czujnika %d, kod błędu: %d\r\n", i+1, status);
-                g_sensors[i].found = 0; // Nie udało się zainicjalizować, oznacz jako niewykryty
-            }
-        }
-    }
-}
-
-
-
-
-
-// Funkcja do skanowania magistrali I2C
-void Scan_I2C_Devices() {
-    printf("Rozpoczynanie skanowania urządzeń I2C...\r\n");
-
-    I2C_HandleTypeDef* i2c_handles[] = {&hi2c1, &hi2c2, &hi2c3};
-    const char* i2c_names[] = {"I2C1", "I2C2", "I2C3"};
-
-    g_num_sensors_found = 0;
-    for (int i = 0; i < MAX_SENSORS; i++) {
-        g_sensors[i].found = 0;
-    }
-
-    for (int i = 0; i < 3; i++) {
-        printf("Skanowanie magistrali %s...\r\n", i2c_names[i]);
-
-        for (uint8_t addr = 1; addr < 128; addr++) {
-            HAL_StatusTypeDef result = HAL_I2C_IsDeviceReady(i2c_handles[i], (uint16_t)(addr << 1), 1, 10);
-            if (result == HAL_OK) {
-                printf("Urządzenie znalezione na magistrali %s pod adresem: 0x%02X\r\n", i2c_names[i], addr);
-
-                // Sprawdź, czy to adres czujnika VL53L5CX
-                // Domyślny adres: 0x29 (7-bit) -> (0x29 << 1) = 0x52 (8-bit)
-                if (addr == 0x29 && g_num_sensors_found < MAX_SENSORS) {
-                    g_sensors[g_num_sensors_found].i2c_handle = i2c_handles[i];
-                    g_sensors[g_num_sensors_found].address = (uint16_t)(0x52); // 8-bitowy adres
-                    g_sensors[g_num_sensors_found].found = 1;
-                    g_num_sensors_found++;
-                }
-
-                HAL_Delay(100); // mały delay
-            }
-        }
-    }
-
-    printf("Skanowanie zakończone na wszystkich magistralach.\r\n");
-
-    // Debug: Wyświetl które czujniki znaleziono
-    for (int i = 0; i < g_num_sensors_found; i++) {
-        printf("Czujnik %d znaleziony na magistrali z handle: %p, adres: 0x%02X\r\n",
-               i+1, (void*)g_sensors[i].i2c_handle, g_sensors[i].address);
-    }
-}
-
 
 /* USER CODE END 4 */
 

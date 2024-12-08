@@ -1,0 +1,4 @@
+../Core/Src/sensors.c:25:6:read_sensors	544	static
+../Core/Src/sensors.c:98:6:ProcessData	280	static
+../Core/Src/sensors.c:117:6:init_sensors	24	static
+../Core/Src/sensors.c:174:6:Scan_I2C_Devices	56	static

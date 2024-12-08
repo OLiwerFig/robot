@@ -1,0 +1,4 @@
+../Core/Src/sensors.c:25:6:read_sensors	10
+../Core/Src/sensors.c:98:6:ProcessData	3
+../Core/Src/sensors.c:117:6:init_sensors	9
+../Core/Src/sensors.c:174:6:Scan_I2C_Devices	8

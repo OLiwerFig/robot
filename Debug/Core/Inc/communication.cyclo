@@ -1,0 +1,3 @@
+../Core/Inc/communication.c:25:6:SendDataToQt	1
+../Core/Inc/communication.c:35:6:ProcessCommand	6
+../Core/Inc/communication.c:73:6:InitCommunication	1

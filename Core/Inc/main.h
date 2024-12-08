@@ -33,6 +33,15 @@ extern "C" {
 /* USER CODE BEGIN Includes */
 
 
+#define UART_BUFFER_SIZE 64
+// main.h
+extern TIM_HandleTypeDef htim1;
+extern TIM_HandleTypeDef htim2;
+extern TIM_HandleTypeDef htim3;
+extern I2C_HandleTypeDef hi2c1;
+extern I2C_HandleTypeDef hi2c2;
+extern I2C_HandleTypeDef hi2c3;
+extern UART_HandleTypeDef huart2;
 
 /* USER CODE END Includes */
 
