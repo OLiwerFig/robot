@@ -108,19 +108,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 
 
 // Callback dla przerwania UART
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART2) {
-        // Potwierdzenie odebrania danych przez LED
-        HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+        if (Rx_data == MSG_HEADER) {
+            isReceiving = 1;
+            bufferIndex = 0;
+        }
+        else if (isReceiving) {
+            if (Rx_data == MSG_FOOTER) {
+                messageBuffer[bufferIndex] = '\0';
+                ProcessCommand(messageBuffer);
+                isReceiving = 0;
+            }
+            else if (bufferIndex < MAX_MSG_LEN - 1) {
+                messageBuffer[bufferIndex++] = Rx_data;
+            }
+        }
 
-        // Przetwarzanie komendy
-        ProcessCommand(Rx_data);
-
-        // Reset LED po przetworzeniu
-        HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-
-        // Ponowne włączenie przerwania
         HAL_UART_Receive_IT(&huart2, (uint8_t*)&Rx_data, 1);
     }
 }
@@ -244,6 +248,8 @@ int main(void)
 
  //     Update_Odometry(&odom, speed_L, speed_R, dt);
 
+
+      SendPWMFeedback(pwm_L, pwm_R);
       // Obliczanie prędkości docelowych
       //CalculateTargetSpeed(&odom, &target, &speed_L_target, &speed_R_target);
 

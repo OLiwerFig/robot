@@ -12,20 +12,33 @@
 #include "main.h"
 #include "odometry.h"
 
-#define CMD_FORWARD 'F'
-#define CMD_BACKWARD 'B'
-#define CMD_LEFT 'L'
-#define CMD_RIGHT 'R'
-#define CMD_STOP 'S'
 
+
+// Command definitions
+#define CMD_FORWARD    'F'
+#define CMD_BACKWARD   'B'
+#define CMD_LEFT       'L'
+#define CMD_RIGHT      'R'
+#define CMD_STOP       'S'
+
+// Message format definitions
+#define MSG_HEADER     '$'
+#define MSG_FOOTER     '#'
+
+#define MAX_MSG_LEN    16
+extern char messageBuffer[MAX_MSG_LEN];
+
+// Extern declarations for global variables
 extern volatile uint8_t Rx_data;
-extern char flag;
-extern uint8_t uartBuffer[UART_BUFFER_SIZE];
+extern char messageBuffer[MAX_MSG_LEN];
+extern int bufferIndex;
+extern int isReceiving;
 
-void ProcessCommand(char cmd);
-void SendDataToQt(Odometry_TypeDef *odom, Target_TypeDef *target,
-                 float pwm_L, float pwm_R, float speed_L, float speed_R);
+// Function declarations
 void InitCommunication(void);
+void ProcessCommand(char* msg);
+void SendPWMFeedback(float pwmL, float pwmR);
+void ParseCommand(char* msg, char* cmd, int* speed);
 
 #endif
 

@@ -1,0 +1,4 @@
+../Core/Src/communication.c:26:6:InitCommunication	8	static
+../Core/Src/communication.c:31:6:ParseCommand	32	static
+../Core/Src/communication.c:42:6:ProcessCommand	152	static
+../Core/Src/communication.c:83:6:SendPWMFeedback	64	static
